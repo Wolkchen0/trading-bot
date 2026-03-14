@@ -40,6 +40,7 @@ from alpaca.data.requests import CryptoBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from utils.logger import logger
+from core.news_analyzer import NewsAnalyzer
 
 # ============================================================
 # KONFİGÜRASYON — $100 BÜTÇEYE ÖZEL
@@ -112,6 +113,9 @@ class CryptoBot:
         self.trades_today = []
         self.last_trade_time = {}
         self.positions = {}
+
+        # Haber analiz modülü
+        self.news = NewsAnalyzer()
 
         # Loglama
         mode = "PAPER" if self.is_paper else "LIVE"
@@ -268,6 +272,56 @@ class CryptoBot:
             "bb_lower": bb_lower,
             "bb_upper": bb_upper,
         }
+
+    def analyze_with_news(self, df, symbol: str) -> Dict:
+        """Teknik analiz + haber analizi birleştir."""
+        # Teknik analiz
+        tech = self.analyze(df)
+
+        # Haber analizi
+        try:
+            news_data = self.news.get_coin_sentiment(symbol)
+            news_score = news_data["news_score"]
+            news_signal = news_data["news_signal"]
+
+            # Haber skorunu teknik analize ekle
+            # Pozitif haber → BUY güvenini artır
+            # Negatif haber → BUY güvenini düşür / SELL güvenini artır
+            if tech["signal"] == "BUY":
+                if news_score >= 10:
+                    tech["confidence"] = min(tech["confidence"] + 15, 100)
+                    tech["reasons"].append(f"Haber: POZITIF ({news_score})")
+                elif news_score <= -20:
+                    tech["confidence"] = max(tech["confidence"] - 25, 0)
+                    tech["reasons"].append(f"Haber: NEGATIF ({news_score}) - DIKKAT!")
+                    if tech["confidence"] < 50:
+                        tech["signal"] = "HOLD"
+                        tech["reasons"].append("Haberler nedeniyle BUY iptal")
+
+            elif tech["signal"] == "HOLD" and news_score >= 30:
+                # Çok pozitif haber → BUY'a çevir
+                tech["signal"] = "BUY"
+                tech["confidence"] = 55
+                tech["reasons"].append(f"HABER TETIKLEDI: Cok pozitif ({news_score})")
+
+            elif tech["signal"] == "HOLD" and news_score <= -30:
+                # Çok negatif haber → Pozisyon varsa SELL sinyali
+                tech["signal"] = "SELL"
+                tech["confidence"] = 55
+                tech["reasons"].append(f"HABER TETIKLEDI: Cok negatif ({news_score})")
+
+            # Haber verilerini ekle
+            tech["news_score"] = news_score
+            tech["news_signal"] = news_signal
+            tech["fear_greed"] = news_data["fear_greed"]
+            tech["news_count"] = news_data["relevant_news_count"]
+
+        except Exception as e:
+            logger.debug(f"Haber analizi hatasi {symbol}: {e}")
+            tech["news_score"] = 0
+            tech["news_signal"] = "NEUTRAL"
+
+        return tech
 
     # ============================================================
     # EMİR YÖNETIMI
@@ -482,12 +536,12 @@ class CryptoBot:
                         if elapsed < CRYPTO_CONFIG["min_trade_interval_minutes"]:
                             continue
 
-                    # Veri çek & analiz et
+                    # Veri çek & analiz et (TEKNİK + HABER)
                     df = self.get_crypto_bars(symbol, days=14)
                     if df.empty or len(df) < 30:
                         continue
 
-                    analysis = self.analyze(df)
+                    analysis = self.analyze_with_news(df, symbol)
 
                     # BUY sinyali
                     if (
@@ -496,11 +550,12 @@ class CryptoBot:
                         and open_count < CRYPTO_CONFIG["max_open_positions"]
                         and symbol not in [p.symbol.replace("USD", "/USD") for p in open_positions]
                     ):
+                        news_info = f" | Haber: {analysis.get('news_score', 0)}"
                         logger.info(
                             f"\n  SINYAL: {symbol} | BUY | "
                             f"Guven: {analysis['confidence']}% | "
                             f"RSI: {analysis['rsi']:.0f} | "
-                            f"Fiyat: ${analysis['price']:,.2f}"
+                            f"Fiyat: ${analysis['price']:,.2f}{news_info}"
                         )
                         if self.execute_buy(symbol, analysis):
                             open_count += 1
