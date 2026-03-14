@@ -19,6 +19,9 @@ schedule>=1.2.0
 pytz>=2024.1
 tqdm>=4.67.0
 
+# NLP Sentiment Analysis
+vaderSentiment>=3.3.2
+
 # Crypto - Multi Exchange Support
 ccxt>=4.0.0
 

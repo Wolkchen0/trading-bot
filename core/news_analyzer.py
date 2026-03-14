@@ -11,6 +11,7 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from utils.logger import logger
+from core.social_sentiment import SocialSentimentAnalyzer
 
 
 # ============================================================
@@ -91,7 +92,8 @@ class NewsAnalyzer:
         self.last_fetch_time = None
         self.fear_greed_cache = None
         self.fear_greed_time = None
-        logger.info("NewsAnalyzer baslatildi - Haber takibi aktif")
+        self.social = SocialSentimentAnalyzer()
+        logger.info("NewsAnalyzer baslatildi - Haber + Sosyal takibi aktif")
 
     # ============================================================
     # FEAR & GREED INDEX
@@ -325,27 +327,37 @@ class NewsAnalyzer:
                 })
                 total_score += sentiment["score"]
 
-        # Genel piyasa haberleri (coin-spesifik değil)
+        # Genel piyasa haberleri (coin-spesifik degil)
         general_score = 0
-        for item in news[:10]:  # İlk 10 haber genel etki
+        for item in news[:10]:
             sentiment = self.analyze_sentiment(item["title"])
             general_score += sentiment["score"]
         general_score = general_score // max(len(news[:10]), 1)
 
-        # Toplam haber skoru hesapla
-        # = Coin-spesifik haberler (%60) + Genel piyasa (%20) + Fear&Greed (%20)
+        # Sosyal medya analizi
+        try:
+            social_data = self.social.get_social_score(symbol)
+            social_score = social_data["social_score"]
+        except Exception as e:
+            logger.debug(f"Sosyal analiz hatasi: {e}")
+            social_data = {"social_score": 0, "social_signal": "NEUTRAL"}
+            social_score = 0
+
+        # Toplam skor hesapla (GUNCELLENMİS)
+        # = Coin haberler %40 + Sosyal medya %25 + Genel piyasa %15 + F&G %20
         if relevant_news:
             coin_avg = total_score // len(relevant_news)
         else:
             coin_avg = 0
 
         final_score = int(
-            coin_avg * 0.6 +
-            general_score * 0.2 +
-            fg["score"] * 0.2
+            coin_avg * 0.40 +
+            social_score * 0.25 +
+            general_score * 0.15 +
+            fg["score"] * 0.20
         )
 
-        # Sinyal üret
+        # Sinyal uret
         if final_score >= 30:
             signal = "STRONG_BUY"
         elif final_score >= 10:
@@ -364,15 +376,18 @@ class NewsAnalyzer:
             "fear_greed": fg["value"],
             "fear_greed_label": fg["label"],
             "relevant_news_count": len(relevant_news),
-            "relevant_news": relevant_news[:5],  # En fazla 5 haber göster
+            "relevant_news": relevant_news[:5],
             "general_market_score": general_score,
+            "social_score": social_score,
+            "social_signal": social_data.get("social_signal", "NEUTRAL"),
+            "reddit_posts": social_data.get("reddit_posts", 0),
         }
 
-        if relevant_news:
+        if relevant_news or social_score != 0:
             logger.info(
-                f"  Haber {coin}: {len(relevant_news)} haber, "
-                f"Skor: {final_score}, Sinyal: {signal} | "
-                f"F&G: {fg['value']} ({fg['label']})"
+                f"  Analiz {coin}: Haber({len(relevant_news)}) "
+                f"Sosyal(skor:{social_score}) "
+                f"F&G:{fg['value']} -> Toplam:{final_score} {signal}"
             )
 
         return result
