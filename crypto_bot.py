@@ -62,15 +62,15 @@ CRYPTO_CONFIG = {
     # Risk yönetimi
     "max_risk_per_trade_pct": 0.02,     # %2 risk (küçük sermaye için)
     "max_position_pct": 0.35,           # Tek pozisyon max %35
-    "max_open_positions": 3,            # Max 3 pozisyon (daha fazla çeşitlilik)
+    "max_open_positions": 4,            # Max 4 pozisyon (daha fazla çeşitlilik)
     "stop_loss_pct": 0.03,              # %3 stop-loss
     "take_profit_pct": 0.05,            # %5 take-profit
     "trailing_stop_pct": 0.025,         # %2.5 trailing stop
 
     # Sinyal parametreleri
-    "rsi_oversold": 35,                 # RSI alış sinyali
+    "rsi_oversold": 38,                 # RSI alış sinyali (38 = daha fazla sinyal)
     "rsi_overbought": 70,              # RSI satış sinyali
-    "bb_proximity_pct": 0.02,          # BB alt bant yakınlık %2
+    "bb_proximity_pct": 0.03,          # BB alt bant yakınlık %3 (daha fazla sinyal)
 
     # Komisyon (Alpaca kripto)
     "commission_pct": 0.0025,           # Alpaca kripto komisyonu %0.25
