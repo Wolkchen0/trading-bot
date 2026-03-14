@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+logs/
+*.log
+venv/
+.venv/
+trade_history.json
+crypto_trade_history.json
+kill_switch_state.json
+.vscode/

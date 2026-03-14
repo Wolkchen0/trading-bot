@@ -1,0 +1,36 @@
+# Alpaca Trading API
+alpaca-py>=0.28.0
+
+# Data & Analysis
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=0.2.30
+
+# Technical Analysis (pandas-ta has numba dependency issues on Python 3.14)
+# pandas-ta will be installed without numba acceleration
+pandas-ta>=0.3.14b1
+
+# Machine Learning
+scikit-learn>=1.3.0
+
+# Dashboard
+streamlit>=1.30.0
+plotly>=5.18.0
+
+# Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
+schedule>=1.2.0
+pytz>=2024.1
+
+# Crypto - Multi Exchange Support
+ccxt>=4.0.0
+
+# Additional Data Sources
+polygon-api-client>=1.13.0
+
+# Webhook Server (TradingView integration)
+flask>=3.0.0
+
+# Testing
+pytest>=7.4.0

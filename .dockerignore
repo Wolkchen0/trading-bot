@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+logs/
+crypto_trade_history.json
+kill_switch_state.json
+*.log
+.git/
