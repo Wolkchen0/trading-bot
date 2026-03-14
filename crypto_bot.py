@@ -43,6 +43,7 @@ from utils.logger import logger
 from core.news_analyzer import NewsAnalyzer
 from core.pattern_detector import PatternDetector
 from core.macro_data import MacroDataAnalyzer
+from core.ml_predictor import MLPredictor
 
 # ============================================================
 # KONFİGÜRASYON — $100 BÜTÇEYE ÖZEL
@@ -129,6 +130,9 @@ class CryptoBot:
         self.macro = MacroDataAnalyzer()
         self.macro_cache = None
         self.macro_last_check = None
+
+        # ML Tahmin modeli
+        self.ml = MLPredictor()
 
         # Loglama
         mode = "PAPER" if self.is_paper else "LIVE"
@@ -420,6 +424,33 @@ class CryptoBot:
                 tech["macro_score"] = macro_score
         except Exception as e:
             logger.debug(f"Makro veri hatasi: {e}")
+
+        # === ML TAHMİN ===
+        try:
+            ml_result = self.ml.predict(df, symbol)
+            ml_score = ml_result["score"]
+            ml_signal = ml_result["signal"]
+
+            if ml_score != 0:
+                # ML skoru BUY/SELL'e ekle
+                if tech["signal"] == "BUY" and ml_score > 0:
+                    tech["confidence"] = min(tech["confidence"] + ml_score, 100)
+                    preds = ml_result.get("predictions", {})
+                    pred_1h = preds.get("1h", {}).get("direction", "?")
+                    pred_4h = preds.get("4h", {}).get("direction", "?")
+                    tech["reasons"].append(f"ML:+{ml_score}(1h:{pred_1h},4h:{pred_4h})")
+                elif tech["signal"] == "BUY" and ml_score < -5:
+                    tech["confidence"] = max(tech["confidence"] + ml_score, 0)
+                    tech["reasons"].append(f"ML:{ml_score} DIKKAT!")
+                    if tech["confidence"] < 50:
+                        tech["signal"] = "HOLD"
+
+            tech["ml_score"] = ml_score
+            tech["ml_predictions"] = ml_result.get("predictions", {})
+
+        except Exception as e:
+            logger.debug(f"ML tahmin hatasi {symbol}: {e}")
+            tech["ml_score"] = 0
 
         return tech
 
