@@ -41,6 +41,7 @@ from alpaca.data.timeframe import TimeFrame
 
 from utils.logger import logger
 from core.news_analyzer import NewsAnalyzer
+from core.pattern_detector import PatternDetector
 
 # ============================================================
 # KONFİGÜRASYON — $100 BÜTÇEYE ÖZEL
@@ -119,6 +120,9 @@ class CryptoBot:
 
         # Haber analiz modülü
         self.news = NewsAnalyzer()
+
+        # Desen tanıma modülü
+        self.patterns = PatternDetector()
 
         # Loglama
         mode = "PAPER" if self.is_paper else "LIVE"
@@ -319,43 +323,67 @@ class CryptoBot:
         }
 
     def analyze_with_news(self, df, symbol: str) -> Dict:
-        """Teknik analiz + haber analizi birleştir."""
+        """Teknik analiz + haber analizi + desen tanıma birleştir."""
         # Teknik analiz
         tech = self.analyze(df)
 
-        # Haber analizi
+        # === DESEN TANIMA (YENİ) ===
+        try:
+            pattern_data = self.patterns.analyze_all(df)
+            pattern_score = pattern_data["pattern_score"]
+            pattern_signal = pattern_data["pattern_signal"]
+
+            # Desen skorunu teknik analize ekle
+            if pattern_score > 0:
+                tech["confidence"] = min(tech["confidence"] + pattern_score, 100)
+                if tech["signal"] == "HOLD" and pattern_score >= 20:
+                    tech["signal"] = "BUY"
+                    tech["confidence"] = max(tech["confidence"], 55)
+            elif pattern_score < 0:
+                if tech["signal"] == "BUY":
+                    tech["confidence"] = max(tech["confidence"] + pattern_score, 0)
+                    if tech["confidence"] < 50:
+                        tech["signal"] = "HOLD"
+                elif tech["signal"] == "HOLD" and pattern_score <= -20:
+                    tech["signal"] = "SELL"
+                    tech["confidence"] = max(abs(pattern_score), 55)
+
+            # Desen sebeplerini ekle
+            tech["reasons"].extend(pattern_data["reasons"])
+            tech["pattern_score"] = pattern_score
+            tech["pattern_signal"] = pattern_signal
+
+        except Exception as e:
+            logger.debug(f"Desen analizi hatasi {symbol}: {e}")
+            tech["pattern_score"] = 0
+            tech["pattern_signal"] = "NEUTRAL"
+
+        # === HABER ANALİZİ ===
         try:
             news_data = self.news.get_coin_sentiment(symbol)
             news_score = news_data["news_score"]
             news_signal = news_data["news_signal"]
 
-            # Haber skorunu teknik analize ekle
-            # Pozitif haber → BUY güvenini artır
-            # Negatif haber → BUY güvenini düşür / SELL güvenini artır
             if tech["signal"] == "BUY":
                 if news_score >= 10:
                     tech["confidence"] = min(tech["confidence"] + 15, 100)
-                    tech["reasons"].append(f"Haber: POZITIF ({news_score})")
+                    tech["reasons"].append(f"Haber:+{news_score}")
                 elif news_score <= -20:
                     tech["confidence"] = max(tech["confidence"] - 25, 0)
-                    tech["reasons"].append(f"Haber: NEGATIF ({news_score}) - DIKKAT!")
+                    tech["reasons"].append(f"Haber:{news_score} DIKKAT!")
                     if tech["confidence"] < 50:
                         tech["signal"] = "HOLD"
-                        tech["reasons"].append("Haberler nedeniyle BUY iptal")
 
             elif tech["signal"] == "HOLD" and news_score >= 30:
-                # Çok pozitif haber → BUY'a çevir
                 tech["signal"] = "BUY"
                 tech["confidence"] = 55
-                tech["reasons"].append(f"HABER TETIKLEDI: Cok pozitif ({news_score})")
+                tech["reasons"].append(f"HABER_BUY({news_score})")
 
             elif tech["signal"] == "HOLD" and news_score <= -30:
-                # Çok negatif haber → Pozisyon varsa SELL sinyali
                 tech["signal"] = "SELL"
                 tech["confidence"] = 55
-                tech["reasons"].append(f"HABER TETIKLEDI: Cok negatif ({news_score})")
+                tech["reasons"].append(f"HABER_SELL({news_score})")
 
-            # Haber verilerini ekle
             tech["news_score"] = news_score
             tech["news_signal"] = news_signal
             tech["fear_greed"] = news_data["fear_greed"]
