@@ -59,29 +59,32 @@ CRYPTO_CONFIG = {
         "RENDER/USD", "TRUMP/USD", "ONDO/USD", "WIF/USD",
     ],
 
-    # Risk yönetimi
-    "max_risk_per_trade_pct": 0.02,     # %2 risk (küçük sermaye için)
-    "max_position_pct": 0.35,           # Tek pozisyon max %35
-    "max_open_positions": 4,            # Max 4 pozisyon (daha fazla çeşitlilik)
-    "stop_loss_pct": 0.03,              # %3 stop-loss
-    "take_profit_pct": 0.05,            # %5 take-profit
-    "trailing_stop_pct": 0.025,         # %2.5 trailing stop
+    # Risk yönetimi (GÜNCELLENMIŞ)
+    "max_risk_per_trade_pct": 0.02,     # %2 risk per trade
+    "max_position_pct": 0.20,           # Tek pozisyon max %20 (daha iyi dağılım)
+    "max_open_positions": 5,            # Max 5 pozisyon
+    "stop_loss_pct": 0.025,             # %2.5 stop-loss (daha sıkı)
+    "take_profit_pct": 0.04,            # %4 take-profit
+    "trailing_stop_pct": 0.015,         # %1.5 trailing stop (kilitlenen kâr)
+    "partial_profit_pct": 0.03,         # %3'te yarısını sat
 
-    # Sinyal parametreleri
-    "rsi_oversold": 38,                 # RSI alış sinyali (38 = daha fazla sinyal)
-    "rsi_overbought": 70,              # RSI satış sinyali
-    "bb_proximity_pct": 0.03,          # BB alt bant yakınlık %3 (daha fazla sinyal)
+    # Sinyal parametreleri (GÜNCELLENMIŞ)
+    "rsi_oversold": 35,                 # RSI alış sinyali
+    "rsi_overbought": 68,               # RSI satış sinyali
+    "bb_proximity_pct": 0.02,           # BB alt bant yakınlık %2
+    "min_volume_ratio": 1.2,            # Volume ortalamanın 1.2x üstünde olmalı
+    "trend_ema_period": 50,             # Trend tespiti EMA periyodu
 
     # Komisyon (Alpaca kripto)
     "commission_pct": 0.0025,           # Alpaca kripto komisyonu %0.25
 
-    # Zamanlama
-    "scan_interval_seconds": 30,        # Her 30 saniyede tara (kripto icin hizli)
-    "min_trade_interval_minutes": 10,   # Min 10 dakika arayla islem
+    # Zamanlama (HIZLANDIRILDI)
+    "scan_interval_seconds": 20,        # Her 20 saniyede tara
+    "min_trade_interval_minutes": 8,    # Min 8 dakika arayla islem
 
     # Kill switch
     "max_daily_loss_pct": 0.05,         # %5 günlük kayıp → dur
-    "max_consecutive_errors": 3,        # 3 hata → dur
+    "max_consecutive_errors": 5,        # 5 hata → dur
 }
 
 
@@ -175,80 +178,119 @@ class CryptoBot:
     # ============================================================
 
     def analyze(self, df: pd.DataFrame) -> Dict:
-        """Teknik göstergeleri hesaplar ve sinyal üretir."""
+        """Gelişmiş teknik analiz: trend, volume, momentum + klasik göstergeler."""
         if len(df) < 30:
             return {"signal": "HOLD", "confidence": 0, "reason": "Yetersiz veri"}
 
         close = df["close"]
+        volume = df["volume"] if "volume" in df.columns else None
 
-        # RSI
+        # === TEMEL GÖSTERGELER ===
         rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
-
-        # EMA
         ema_9 = EMAIndicator(close, window=9).ema_indicator().iloc[-1]
         ema_21 = EMAIndicator(close, window=21).ema_indicator().iloc[-1]
 
-        # MACD
         macd = MACD(close)
         macd_hist = macd.macd_diff().iloc[-1]
         prev_macd_hist = macd.macd_diff().iloc[-2]
 
-        # Bollinger Bands
         bb = BollingerBands(close, window=20, window_dev=2)
         bb_lower = bb.bollinger_lband().iloc[-1]
         bb_upper = bb.bollinger_hband().iloc[-1]
 
-        # ATR
         atr = AverageTrueRange(
             df["high"], df["low"], df["close"], window=14
         ).average_true_range().iloc[-1]
 
         current_price = close.iloc[-1]
-        confidence = 0
         reasons = []
 
-        # === BUY SİNYALLERİ ===
+        # === TREND TESPİTİ (YENİ) ===
+        ema_50 = EMAIndicator(close, window=min(50, len(close)-1)).ema_indicator().iloc[-1]
+        if current_price > ema_50 and ema_9 > ema_21:
+            trend = "UPTREND"
+        elif current_price < ema_50 and ema_9 < ema_21:
+            trend = "DOWNTREND"
+        else:
+            trend = "SIDEWAYS"
+
+        # === VOLUME ANALİZİ (YENİ) ===
+        volume_ok = True
+        volume_ratio = 1.0
+        if volume is not None and len(volume) > 20:
+            avg_volume = volume.rolling(20).mean().iloc[-1]
+            current_volume = volume.iloc[-1]
+            if avg_volume > 0:
+                volume_ratio = current_volume / avg_volume
+                volume_ok = volume_ratio >= CRYPTO_CONFIG["min_volume_ratio"]
+
+        # === MOMENTUM (YENİ) ===
+        # Son 5 bar'ın yönü
+        price_change_5 = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
+        price_change_1 = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
+        momentum_up = price_change_5 > 0 and price_change_1 > 0
+
+        # === BUY SKORLAMA (GELİŞTİRİLMİŞ) ===
         buy_score = 0
 
-        # RSI oversold
         if rsi < CRYPTO_CONFIG["rsi_oversold"]:
-            buy_score += 30
-            reasons.append(f"RSI={rsi:.0f} (oversold)")
+            buy_score += 25
+            reasons.append(f"RSI={rsi:.0f}")
 
-        # EMA crossover (fast > slow)
         if ema_9 > ema_21:
-            buy_score += 20
-            reasons.append("EMA9>EMA21")
+            buy_score += 15
+            reasons.append("EMA+")
 
-        # MACD histogram pozitif dönüş
         if macd_hist > 0 and prev_macd_hist <= 0:
-            buy_score += 25
-            reasons.append("MACD pozitif donen")
+            buy_score += 20
+            reasons.append("MACD+")
 
-        # BB alt bant yakınlık
         if current_price < bb_lower * (1 + CRYPTO_CONFIG["bb_proximity_pct"]):
-            buy_score += 25
-            reasons.append("BB alt bant")
+            buy_score += 20
+            reasons.append("BB_dip")
 
-        # === SELL SİNYALLERİ ===
+        # Trend bonusu
+        if trend == "UPTREND":
+            buy_score += 10
+            reasons.append("Trend+")
+        elif trend == "DOWNTREND":
+            buy_score -= 15  # Düşüş trendinde alım cezası
+            reasons.append("Trend-")
+
+        # Volume bonusu
+        if volume_ok and volume_ratio > 1.5:
+            buy_score += 10
+            reasons.append(f"Vol:{volume_ratio:.1f}x")
+        elif not volume_ok:
+            buy_score -= 10  # Düşük volume = zayıf sinyal
+
+        # Momentum bonusu
+        if momentum_up:
+            buy_score += 5
+            reasons.append("Mom+")
+
+        # === SELL SKORLAMA ===
         sell_score = 0
 
         if rsi > CRYPTO_CONFIG["rsi_overbought"]:
-            sell_score += 30
-            reasons.append(f"RSI={rsi:.0f} (overbought)")
+            sell_score += 25
+            reasons.append(f"RSI={rsi:.0f}")
 
         if ema_9 < ema_21:
-            sell_score += 20
+            sell_score += 15
 
         if macd_hist < 0 and prev_macd_hist >= 0:
-            sell_score += 25
-            reasons.append("MACD negatif donen")
+            sell_score += 20
+            reasons.append("MACD-")
 
         if current_price > bb_upper:
-            sell_score += 25
-            reasons.append("BB ust bant")
+            sell_score += 20
+            reasons.append("BB_top")
 
-        # Karar
+        if trend == "DOWNTREND":
+            sell_score += 10
+
+        # === KARAR ===
         if buy_score >= 50:
             signal = "BUY"
             confidence = min(buy_score, 100)
@@ -271,6 +313,9 @@ class CryptoBot:
             "atr": atr,
             "bb_lower": bb_lower,
             "bb_upper": bb_upper,
+            "trend": trend,
+            "volume_ratio": volume_ratio,
+            "momentum_5bar": price_change_5,
         }
 
     def analyze_with_news(self, df, symbol: str) -> Dict:
@@ -449,7 +494,7 @@ class CryptoBot:
     # ============================================================
 
     def manage_positions(self):
-        """Açık pozisyonları kontrol et (stop-loss, take-profit)."""
+        """Gelişmiş pozisyon yönetimi: trailing stop + kademeli kâr alma."""
         try:
             positions = self.client.get_all_positions()
         except Exception as e:
@@ -458,32 +503,79 @@ class CryptoBot:
             return
 
         for pos in positions:
-            symbol_clean = pos.symbol  # BTCUSD
-            # Alpaca formatına çevir
+            symbol_clean = pos.symbol
             if "USD" in symbol_clean:
-                symbol = symbol_clean[:-3] + "/" + symbol_clean[-3:]  # BTC/USD
+                symbol = symbol_clean[:-3] + "/" + symbol_clean[-3:]
             else:
                 symbol = symbol_clean
 
             entry_price = float(pos.avg_entry_price)
             current_price = float(pos.current_price)
             pnl_pct = (current_price - entry_price) / entry_price
+            pnl_usd = float(pos.unrealized_pl)
 
-            # Take profit
-            if pnl_pct >= CRYPTO_CONFIG["take_profit_pct"]:
+            # Trailing stop güncelleme
+            pos_data = self.positions.get(symbol, {})
+            highest = pos_data.get("highest_price", entry_price)
+            if current_price > highest:
+                highest = current_price
+                if symbol in self.positions:
+                    self.positions[symbol]["highest_price"] = highest
+
+            # Trailing stop: en yüksek fiyattan %1.5 düşerse sat
+            trailing_drop = (highest - current_price) / highest if highest > 0 else 0
+
+            # === SATIŞ KARARLARI (ÖNCELİK SIRASINA GÖRE) ===
+
+            # 1. KESİN STOP-LOSS (%2.5 zarar)
+            if pnl_pct <= -CRYPTO_CONFIG["stop_loss_pct"]:
                 logger.info(
-                    f"  TAKE PROFIT {symbol}: +{pnl_pct:.1%} "
-                    f"(${float(pos.unrealized_pl):+.2f})"
+                    f"  STOP LOSS {symbol}: {pnl_pct:.1%} (${pnl_usd:+.2f})"
+                )
+                self.execute_sell(symbol, f"STOP_LOSS ({pnl_pct:.1%})")
+
+            # 2. TAKE PROFIT (%4 kâr)
+            elif pnl_pct >= CRYPTO_CONFIG["take_profit_pct"]:
+                logger.info(
+                    f"  TAKE PROFIT {symbol}: +{pnl_pct:.1%} (${pnl_usd:+.2f})"
                 )
                 self.execute_sell(symbol, f"TAKE_PROFIT (+{pnl_pct:.1%})")
 
-            # Stop loss
-            elif pnl_pct <= -CRYPTO_CONFIG["stop_loss_pct"]:
+            # 3. TRAILING STOP (kârdayken geri düşerse)
+            elif pnl_pct > 0.01 and trailing_drop >= CRYPTO_CONFIG["trailing_stop_pct"]:
                 logger.info(
-                    f"  STOP LOSS {symbol}: {pnl_pct:.1%} "
-                    f"(${float(pos.unrealized_pl):+.2f})"
+                    f"  TRAILING STOP {symbol}: Peak ${highest:,.4f} -> ${current_price:,.4f} "
+                    f"(-{trailing_drop:.1%}) | P&L: {pnl_pct:.1%}"
                 )
-                self.execute_sell(symbol, f"STOP_LOSS ({pnl_pct:.1%})")
+                self.execute_sell(symbol, f"TRAILING_STOP (peak -{trailing_drop:.1%})")
+
+            # 4. KADEMELİ KÂR ALMA (%3'te yarısını sat)
+            elif (pnl_pct >= CRYPTO_CONFIG["partial_profit_pct"]
+                  and not pos_data.get("partial_sold", False)):
+                logger.info(
+                    f"  KADEMELI KAR {symbol}: +{pnl_pct:.1%} -> Yarisi satiliyor"
+                )
+                try:
+                    qty = float(pos.qty)
+                    half_qty = round(qty * 0.5, 8)
+                    if half_qty > 0:
+                        request = MarketOrderRequest(
+                            symbol=symbol, qty=half_qty,
+                            side=OrderSide.SELL, time_in_force=TimeInForce.GTC,
+                        )
+                        self.client.submit_order(request)
+                        if symbol in self.positions:
+                            self.positions[symbol]["partial_sold"] = True
+                        logger.info(f"  Yarisi satildi: {half_qty:.6f} {symbol}")
+                except Exception as e:
+                    logger.error(f"Kademeli satis hatasi {symbol}: {e}")
+
+            # Durum logla
+            if abs(pnl_pct) > 0.01:
+                logger.debug(
+                    f"  Pozisyon {symbol}: {pnl_pct:+.2%} | "
+                    f"Peak: ${highest:,.4f} | Trail: -{trailing_drop:.2%}"
+                )
 
     # ============================================================
     # ANA DÖNGÜ
