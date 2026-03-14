@@ -42,6 +42,7 @@ from alpaca.data.timeframe import TimeFrame
 from utils.logger import logger
 from core.news_analyzer import NewsAnalyzer
 from core.pattern_detector import PatternDetector
+from core.macro_data import MacroDataAnalyzer
 
 # ============================================================
 # KONFİGÜRASYON — $100 BÜTÇEYE ÖZEL
@@ -123,6 +124,11 @@ class CryptoBot:
 
         # Desen tanıma modülü
         self.patterns = PatternDetector()
+
+        # Makro ekonomik veri
+        self.macro = MacroDataAnalyzer()
+        self.macro_cache = None
+        self.macro_last_check = None
 
         # Loglama
         mode = "PAPER" if self.is_paper else "LIVE"
@@ -393,6 +399,27 @@ class CryptoBot:
             logger.debug(f"Haber analizi hatasi {symbol}: {e}")
             tech["news_score"] = 0
             tech["news_signal"] = "NEUTRAL"
+
+        # === MAKRO EKONOMİK VERİ ===
+        try:
+            # Makro veriyi 6 saatte bir guncelle (yavas degisir)
+            if (self.macro_last_check is None or
+                (datetime.now() - self.macro_last_check).total_seconds() > 21600):
+                self.macro_cache = self.macro.get_macro_score()
+                self.macro_last_check = datetime.now()
+
+            if self.macro_cache:
+                macro_score = self.macro_cache["macro_score"]
+                # Makro ortam BUY/SELL'i etkiler
+                if tech["signal"] == "BUY" and macro_score <= -10:
+                    tech["confidence"] = max(tech["confidence"] - 10, 0)
+                    tech["reasons"].append(f"Makro:BEARISH({macro_score})")
+                elif tech["signal"] == "BUY" and macro_score >= 10:
+                    tech["confidence"] = min(tech["confidence"] + 10, 100)
+                    tech["reasons"].append(f"Makro:BULLISH({macro_score})")
+                tech["macro_score"] = macro_score
+        except Exception as e:
+            logger.debug(f"Makro veri hatasi: {e}")
 
         return tech
 
