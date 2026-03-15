@@ -41,23 +41,32 @@ NEWS_CONFIG = {
         "crash", "dump", "plunge", "collapse", "bearish", "sell-off",
         "liquidation", "fear", "panic", "tumble", "drop", "decline",
         "bloodbath", "capitulation", "correction",
-        # Düzenleme negatif
+        # Duzenleme negatif
         "ban", "crackdown", "lawsuit", "sec sues", "regulation",
         "china ban", "restrict", "illegal", "fraud", "scam",
-        # Hack & Güvenlik
+        # Hack & Guvenlik
         "hack", "exploit", "breach", "stolen", "rug pull",
         "vulnerability", "attack", "compromised",
         # Ekonomi negatif
         "recession", "inflation", "rate hike", "fed hawkish",
         "bankruptcy", "insolvent", "ftx", "terra luna",
-        # Düşüş (Türkçe)
-        "dusus", "cokus", "ayı", "panik", "kayip",
+        # JEOPOLITIK KRIZ (YENI)
+        "war escalat", "military strike", "missile", "strait of hormuz",
+        "oil surge", "oil spike", "sanctions", "embargo",
+        "nuclear", "invasion", "bombing", "retaliati",
+        "economic collapse", "supply disruption",
+        # Dusus (Turkce)
+        "dusus", "cokus", "panik", "kayip", "savas",
     ],
     "high_impact_keywords": [
         # Bu kelimeler varsa etki x2
         "breaking", "just in", "urgent", "flash",
         "elon musk", "trump", "sec", "fed", "federal reserve",
         "binance", "coinbase", "blackrock", "grayscale",
+        # JEOPOLITIK (YENI)
+        "iran", "israel", "hormuz", "oil price", "crude oil",
+        "ceasefire", "ateskes", "peace deal", "war",
+        "pentagon", "military", "strait",
     ],
 
     # Coin-spesifik haber takibi

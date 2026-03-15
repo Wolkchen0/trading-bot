@@ -49,45 +49,61 @@ from core.ml_predictor import MLPredictor
 # KONFİGÜRASYON — $100 BÜTÇEYE ÖZEL
 # ============================================================
 CRYPTO_CONFIG = {
-    # İşlem yapılacak coinler — 20 coin! (Alpaca formatı)
+    # ============================================================
+    # KRIZ MODU AKTIF — Iran Savasi / Petrol Krizi Stratejisi
+    # ============================================================
+    
+    # Coin oncelik sirasi (Tier 1 = en guclu, en cok pozisyon)
     "symbols": [
-        # Büyük piyasa hacmi
-        "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD",
-        # Altcoinler (yüksek volatilite = daha fazla fırsat)
+        # TIER 1 — Safe Haven / Dijital Altin (pozisyon %30 her biri)
+        "BTC/USD", "ETH/USD",
+        # TIER 2 — Buyuk piyasa hacmi (guclu projeler)
+        "SOL/USD", "XRP/USD", "LINK/USD", "AAVE/USD", "AVAX/USD",
+        # TIER 3 — Altcoinler (kriz zamaninda riskli ama firsatci)
+        "LTC/USD", "ADA/USD", "DOT/USD", "ARB/USD", "UNI/USD",
+        # TIER 4 — Meme/Yuksek risk (minimum pozisyon)
         "DOGE/USD", "SHIB/USD", "PEPE/USD", "BONK/USD",
-        # DeFi tokenleri
-        "LINK/USD", "UNI/USD", "AAVE/USD", "AVAX/USD",
-        # Diğer popüler coinler
-        "DOT/USD", "LTC/USD", "ADA/USD", "ARB/USD",
         "RENDER/USD", "TRUMP/USD", "ONDO/USD", "WIF/USD",
     ],
-
-    # Risk yönetimi (GÜNCELLENMIŞ)
-    "max_risk_per_trade_pct": 0.02,     # %2 risk per trade
-    "max_position_pct": 0.20,           # Tek pozisyon max %20 (daha iyi dağılım)
+    
+    # Kriz modu pozisyon agirliklari
+    "tier_weights": {
+        "BTC/USD": 0.30,   # BTC max %30 pozisyon
+        "ETH/USD": 0.30,   # ETH max %30 pozisyon
+        "SOL/USD": 0.20, "XRP/USD": 0.20, "LINK/USD": 0.20,
+        "AAVE/USD": 0.20, "AVAX/USD": 0.20,
+        # Diger hersey max %15
+    },
+    "default_tier_weight": 0.15,  # Tier 3-4 max pozisyon
+    
+    # Kriz Risk Yonetimi (SIKILA$TIRILMI$)
+    "max_risk_per_trade_pct": 0.015,    # %1.5 risk per trade (krizde dikkatli)
+    "max_position_pct": 0.25,           # Tek pozisyon max %25
     "max_open_positions": 5,            # Max 5 pozisyon
-    "stop_loss_pct": 0.025,             # %2.5 stop-loss (daha sıkı)
-    "take_profit_pct": 0.04,            # %4 take-profit
-    "trailing_stop_pct": 0.015,         # %1.5 trailing stop (kilitlenen kâr)
-    "partial_profit_pct": 0.03,         # %3'te yarısını sat
+    "stop_loss_pct": 0.02,              # %2 stop-loss (SIKI — krizde hizli kes)
+    "take_profit_pct": 0.06,            # %6 take-profit (GENIS — kriz rallileri guclu)
+    "trailing_stop_pct": 0.012,         # %1.2 trailing stop
+    "partial_profit_pct": 0.04,         # %4'te yarisini sat
+    "cash_reserve_pct": 0.20,           # %20 nakit tut (dipte alim icin hazir)
 
-    # Sinyal parametreleri (GÜNCELLENMIŞ)
-    "rsi_oversold": 35,                 # RSI alış sinyali
-    "rsi_overbought": 68,               # RSI satış sinyali
-    "bb_proximity_pct": 0.02,           # BB alt bant yakınlık %2
-    "min_volume_ratio": 1.2,            # Volume ortalamanın 1.2x üstünde olmalı
-    "trend_ema_period": 50,             # Trend tespiti EMA periyodu
+    # Sinyal parametreleri (KRIZ MODU)
+    "rsi_oversold": 30,                 # RSI 30'a dustugunde al (daha guclu dip)
+    "rsi_overbought": 72,               # RSI 72'de sat (kriz rallileri surabilir)
+    "bb_proximity_pct": 0.015,          # BB alt bant yakinlik %1.5
+    "min_volume_ratio": 1.3,            # Volume 1.3x olmali (krizde volume onemli)
+    "trend_ema_period": 50,
+    
+    # Komisyon
+    "commission_pct": 0.0025,
+    
+    # Zamanlama (KRIZ HIZI)
+    "scan_interval_seconds": 15,        # Her 15 saniyede tara (krizde hizli ol)
+    "min_trade_interval_minutes": 5,    # Min 5 dakika (krizde firsatlar hizli gelir)
 
-    # Komisyon (Alpaca kripto)
-    "commission_pct": 0.0025,           # Alpaca kripto komisyonu %0.25
+    # Kill switch (krizde genis tut)
+    "max_daily_loss_pct": 0.04,         # %4 gunluk kayip → dur (normalde %5)
+    "max_consecutive_errors": 5,
 
-    # Zamanlama (HIZLANDIRILDI)
-    "scan_interval_seconds": 20,        # Her 20 saniyede tara
-    "min_trade_interval_minutes": 8,    # Min 8 dakika arayla islem
-
-    # Kill switch
-    "max_daily_loss_pct": 0.05,         # %5 günlük kayıp → dur
-    "max_consecutive_errors": 5,        # 5 hata → dur
 }
 
 
@@ -459,12 +475,29 @@ class CryptoBot:
     # ============================================================
 
     def execute_buy(self, symbol: str, analysis: Dict) -> bool:
-        """Alış emri gönderir."""
+        """Alis emri gonderir — KRIZ MODU pozisyon boyutlandirmasi."""
         try:
             # Pozisyon boyutu hesapla
             account = self.client.get_account()
             cash = float(account.cash)
-            max_invest = cash * CRYPTO_CONFIG["max_position_pct"]
+            equity = float(account.equity)
+            
+            # Nakit rezerv kontrolu (krizde %20 nakit tut)
+            cash_reserve = equity * CRYPTO_CONFIG.get("cash_reserve_pct", 0.20)
+            available_cash = max(cash - cash_reserve, 0)
+            
+            if available_cash < 10:
+                logger.warning(f"Nakit rezerv korumasi: Cash ${cash:.2f}, Rezerv ${cash_reserve:.2f}")
+                return False
+            
+            # Tier-based pozisyon boyutu
+            tier_weight = CRYPTO_CONFIG.get("tier_weights", {}).get(
+                symbol, CRYPTO_CONFIG.get("default_tier_weight", 0.15)
+            )
+            max_invest = min(
+                available_cash * tier_weight,
+                equity * CRYPTO_CONFIG["max_position_pct"],
+            )
 
             if max_invest < 1:
                 logger.warning(f"Yetersiz bakiye: ${cash:.2f}")
@@ -474,7 +507,7 @@ class CryptoBot:
             commission = max_invest * CRYPTO_CONFIG["commission_pct"]
             invest_after_fee = max_invest - commission
 
-            # Kripto miktarı (fractional)
+            # Kripto miktari (fractional)
             qty = round(invest_after_fee / price, 8)
 
             if qty * price < 1:
