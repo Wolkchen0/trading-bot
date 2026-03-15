@@ -46,69 +46,84 @@ from core.macro_data import MacroDataAnalyzer
 from core.ml_predictor import MLPredictor
 
 # ============================================================
-# KONFİGÜRASYON — $100 BÜTÇEYE ÖZEL
+# KONFİGÜRASYON — $500-1000 GERCEK HESAP + KRIZ STRATEJISI
 # ============================================================
+#
+# STRATEJI: Hibrit — Scalp + Swing + Kriz
+# -----------------------------------------------
+# 1. SCALP: Hizli al-sat, %1.5-2 kar hedefi, cok islem
+# 2. SWING: Guclu sinyalde %4-6 kar hedefi, uzun tut
+# 3. KRIZ: Jeopolitik haber ile dip alimi
+#
+# $500 ile gunluk hedef: $5-15 (%1-3)
+# $1000 ile gunluk hedef: $10-30 (%1-3)
+# Aylik bilesik: %30-90 potansiyel (agresif)
+# -----------------------------------------------
 CRYPTO_CONFIG = {
     # ============================================================
-    # KRIZ MODU AKTIF — Iran Savasi / Petrol Krizi Stratejisi
+    # KRIZ + GUNLUK KAZANC MODU
     # ============================================================
-    
-    # Coin oncelik sirasi (Tier 1 = en guclu, en cok pozisyon)
+
+    # Coin secimi: VOLATILITE ODAKLI (kucuk hesapta % onemli, $ degil)
     "symbols": [
-        # TIER 1 — Safe Haven / Dijital Altin (pozisyon %30 her biri)
-        "BTC/USD", "ETH/USD",
-        # TIER 2 — Buyuk piyasa hacmi (guclu projeler)
-        "SOL/USD", "XRP/USD", "LINK/USD", "AAVE/USD", "AVAX/USD",
-        # TIER 3 — Altcoinler (kriz zamaninda riskli ama firsatci)
-        "LTC/USD", "ADA/USD", "DOT/USD", "ARB/USD", "UNI/USD",
-        # TIER 4 — Meme/Yuksek risk (minimum pozisyon)
-        "DOGE/USD", "SHIB/USD", "PEPE/USD", "BONK/USD",
-        "RENDER/USD", "TRUMP/USD", "ONDO/USD", "WIF/USD",
+        # TIER 1 — Yuksek likidite + iyi volatilite
+        "SOL/USD", "ETH/USD", "XRP/USD",
+        # TIER 2 — Yuksek volatilite (gunluk %3-8 hareket)
+        "DOGE/USD", "AVAX/USD", "LINK/USD", "AAVE/USD",
+        # TIER 3 — Cok yuksek volatilite (gunluk %5-15 hareket)
+        "PEPE/USD", "BONK/USD", "WIF/USD", "SHIB/USD",
+        # TIER 4 — Safe haven + buyuk piyasa
+        "BTC/USD", "ADA/USD", "DOT/USD", "LTC/USD",
+        # TIER 5 — Firsatci
+        "ARB/USD", "UNI/USD", "RENDER/USD", "TRUMP/USD",
     ],
-    
-    # Kriz modu pozisyon agirliklari
+
+    # Pozisyon agirliklari ($500 hesaba gore)
     "tier_weights": {
-        "BTC/USD": 0.30,   # BTC max %30 pozisyon
-        "ETH/USD": 0.30,   # ETH max %30 pozisyon
-        "SOL/USD": 0.20, "XRP/USD": 0.20, "LINK/USD": 0.20,
-        "AAVE/USD": 0.20, "AVAX/USD": 0.20,
-        # Diger hersey max %15
+        "SOL/USD": 0.40, "ETH/USD": 0.35, "XRP/USD": 0.35,
+        "DOGE/USD": 0.30, "AVAX/USD": 0.30, "LINK/USD": 0.30,
+        "AAVE/USD": 0.30,
+        "PEPE/USD": 0.25, "BONK/USD": 0.25, "WIF/USD": 0.25,
+        "BTC/USD": 0.30,
     },
-    "default_tier_weight": 0.15,  # Tier 3-4 max pozisyon
-    
-    # Kriz Risk Yonetimi (SIKILA$TIRILMI$)
-    "max_risk_per_trade_pct": 0.015,    # %1.5 risk per trade (krizde dikkatli)
-    "max_position_pct": 0.25,           # Tek pozisyon max %25
-    "max_open_positions": 5,            # Max 5 pozisyon
-    "stop_loss_pct": 0.02,              # %2 stop-loss (SIKI — krizde hizli kes)
-    "take_profit_pct": 0.06,            # %6 take-profit (GENIS — kriz rallileri guclu)
-    "trailing_stop_pct": 0.012,         # %1.2 trailing stop
-    "partial_profit_pct": 0.04,         # %4'te yarisini sat
-    "cash_reserve_pct": 0.20,           # %20 nakit tut (dipte alim icin hazir)
+    "default_tier_weight": 0.20,
 
-    # Sinyal parametreleri (KRIZ MODU)
-    "rsi_oversold": 30,                 # RSI 30'a dustugunde al (daha guclu dip)
-    "rsi_overbought": 72,               # RSI 72'de sat (kriz rallileri surabilir)
-    "bb_proximity_pct": 0.015,          # BB alt bant yakinlik %1.5
-    "min_volume_ratio": 1.3,            # Volume 1.3x olmali (krizde volume onemli)
+    # === RISK YONETIMI ($500-1000 HESAP) ===
+    "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
+    "max_position_pct": 0.40,           # Tek pozisyon max %40 ($500 = $200)
+    "max_open_positions": 2,            # SADECE 2 pozisyon (sermayeyi yogunlastir)
+    "cash_reserve_pct": 0.15,           # %15 nakit rezerv
+
+    # === SCALP HEDEFLERI (GUNLUK KAZANC) ===
+    "stop_loss_pct": 0.012,             # %1.2 stop-loss ($200 pozisyon = $2.4 kayip)
+    "take_profit_pct": 0.025,           # %2.5 take-profit ($200 poz = $5 kazanc)
+    "trailing_stop_pct": 0.008,         # %0.8 trailing stop (kari kilitle)
+    "partial_profit_pct": 0.018,        # %1.8'de yarisini sat
+
+    # === SINYAL (AGRESIF — COK ISLEM) ===
+    "rsi_oversold": 32,                 # RSI 32 = dip (agresif alim)
+    "rsi_overbought": 70,               # RSI 70 = tepe
+    "bb_proximity_pct": 0.015,          # BB alt bant %1.5
+    "min_volume_ratio": 1.2,            # Volume 1.2x (scalp icin esnek)
     "trend_ema_period": 50,
-    
-    # Komisyon
+
+    # === KOMISYON FARKINDALIGI ===
     "commission_pct": 0.0025,
-    
-    # Zamanlama (KRIZ HIZI)
-    "scan_interval_seconds": 15,        # Her 15 saniyede tara (krizde hizli ol)
-    "min_trade_interval_minutes": 5,    # Min 5 dakika (krizde firsatlar hizli gelir)
+    "min_trade_value": 5.0,             # Min $5 islem
 
-    # Kill switch (krizde genis tut)
-    "max_daily_loss_pct": 0.04,         # %4 gunluk kayip → dur (normalde %5)
+    # === ZAMANLAMA (SCALP HIZI) ===
+    "scan_interval_seconds": 10,        # Her 10 saniyede tara
+    "min_trade_interval_minutes": 3,    # Min 3 dakika
+
+    # === KILL SWITCH (KUCUK HESAP KORUMASI) ===
+    "max_daily_loss_pct": 0.03,         # %3 gunluk kayip → dur ($500 = $15 max)
     "max_consecutive_errors": 5,
-
 }
 
 
 class CryptoBot:
-    """$100 bütçeli kripto trading botu."""
+    """$500-1000 gercek hesap icin optimize edilmis kripto trading botu."""
+
 
     def __init__(self, live: bool = False):
         self.api_key = os.getenv("ALPACA_API_KEY", "")
