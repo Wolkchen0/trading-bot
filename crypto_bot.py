@@ -96,6 +96,7 @@ CRYPTO_CONFIG = {
     # === RISK YONETIMI ($500-1000 GERCEK HESAP) ===
     "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
     "max_position_pct": 0.45,           # Tek pozisyon max %45 ($500 = $225)
+    "max_position_usd": 300,            # MUTLAK LIMIT: max $300 per pozisyon (paper+gercek)
     "max_open_positions": 2,            # Max 2 pozisyon ($500'de yogunlastir)
     "cash_reserve_pct": 0.10,           # %10 nakit rezerv ($500 = $50 yedek)
     "micro_account_threshold": 600,     # $600 altinda ekstra koruma
@@ -563,14 +564,20 @@ class CryptoBot:
             tier_weight = CRYPTO_CONFIG.get("tier_weights", {}).get(
                 symbol, CRYPTO_CONFIG.get("default_tier_weight", 0.15)
             )
+            # MUTLAK LIMIT: paper hesap $100K olsa bile max $300 pozisyon
+            max_position_usd = CRYPTO_CONFIG.get("max_position_usd", 300)
             max_invest = min(
                 available_cash * tier_weight,
                 equity * CRYPTO_CONFIG["max_position_pct"],
+                max_position_usd,  # Gercek hesap simülasyonu
             )
 
-            if max_invest < 1:
-                logger.warning(f"Yetersiz bakiye: ${cash:.2f}")
+            if max_invest < CRYPTO_CONFIG.get("min_trade_value", 10):
+                logger.warning(f"Yetersiz bakiye veya limit: ${max_invest:.2f} < min ${CRYPTO_CONFIG.get('min_trade_value', 10)}")
                 return False
+
+            logger.info(f"  Pozisyon boyutu: ${max_invest:.2f} (max: ${max_position_usd}, tier: {tier_weight:.0%})")
+
 
             price = analysis["price"]
             commission = max_invest * CRYPTO_CONFIG["commission_pct"]
