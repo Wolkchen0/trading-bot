@@ -150,6 +150,7 @@ class CryptoBot:
         self.trades_today = []
         self.last_trade_time = {}
         self.positions = {}
+        self.sell_cooldown = {}  # BUG FIX: satis dongusu onleme
 
         # Haber analiz modülü
         self.news = NewsAnalyzer()
@@ -584,9 +585,15 @@ class CryptoBot:
             return False
 
     def execute_sell(self, symbol: str, reason: str) -> bool:
-        """Satış emri gönderir."""
+        """Satis emri gonderir — cooldown ile dongu onleme."""
         try:
-            # Önce bekleyen stop-loss emirlerini iptal et
+            # BUG FIX: Cooldown kontrolu (ayni sembol 60sn icinde tekrar satilmasin)
+            cooldown_until = self.sell_cooldown.get(symbol)
+            if cooldown_until and datetime.now() < cooldown_until:
+                logger.debug(f"  SELL cooldown: {symbol} (bekle {(cooldown_until - datetime.now()).seconds}sn)")
+                return False
+
+            # Once bekleyen stop-loss emirlerini iptal et
             try:
                 orders = self.client.get_orders(
                     GetOrdersRequest(status=QueryOrderStatus.OPEN)
@@ -600,6 +607,9 @@ class CryptoBot:
 
             # Pozisyonu kapat
             self.client.close_position(symbol.replace("/", ""))
+
+            # BUG FIX: 60 saniyelik cooldown koy
+            self.sell_cooldown[symbol] = datetime.now() + timedelta(seconds=60)
 
             pos = self.positions.get(symbol, {})
             entry = pos.get("entry_price", 0)
@@ -642,6 +652,17 @@ class CryptoBot:
                 symbol = symbol_clean[:-3] + "/" + symbol_clean[-3:]
             else:
                 symbol = symbol_clean
+
+            # BUG FIX: Cooldown kontrolu
+            cooldown_until = self.sell_cooldown.get(symbol)
+            if cooldown_until and datetime.now() < cooldown_until:
+                continue
+
+            # BUG FIX: Minimum pozisyon degeri kontrolu ($5)
+            pos_value = float(pos.qty) * float(pos.current_price)
+            if pos_value < 5.0:
+                logger.debug(f"  Pozisyon cok kucuk, atla: {symbol} ${pos_value:.2f}")
+                continue
 
             entry_price = float(pos.avg_entry_price)
             current_price = float(pos.current_price)

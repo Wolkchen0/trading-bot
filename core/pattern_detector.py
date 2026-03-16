@@ -459,95 +459,212 @@ class PatternDetector:
         }
 
     # ============================================================
-    # 5. KAPSAMLI ANALİZ (TÜM DESENLER)
+    # 5. DISCRETIONARY FORMASYONLAR (INSAN GOZU)
+    # ============================================================
+
+    def _find_swing_points(self, df, window=5):
+        """Swing High/Low pivot noktalarini bul."""
+        highs = df["high"].values
+        lows = df["low"].values
+        swing_highs = []
+        swing_lows = []
+        for i in range(window, len(df) - window):
+            if highs[i] == max(highs[i-window:i+window+1]):
+                swing_highs.append((i, highs[i]))
+            if lows[i] == min(lows[i-window:i+window+1]):
+                swing_lows.append((i, lows[i]))
+        return swing_highs, swing_lows
+
+    def detect_head_shoulders(self, df, tolerance=0.015):
+        """Head & Shoulders — guclu dusus formasyonu."""
+        if len(df) < 60:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        swing_highs, _ = self._find_swing_points(df, window=5)
+        if len(swing_highs) < 3:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        sh1, sh2, sh3 = swing_highs[-3], swing_highs[-2], swing_highs[-1]
+        head, left_s, right_s = sh2[1], sh1[1], sh3[1]
+        if head > left_s and head > right_s:
+            if abs(left_s - right_s) / left_s < tolerance * 2:
+                neckline = df["low"].iloc[sh1[0]:sh3[0]+1].min()
+                if df["close"].iloc[-1] < neckline * 1.01:
+                    return {"detected": True, "pattern": "HEAD_SHOULDERS",
+                            "signal": "SELL", "score": -30,
+                            "description": "Head & Shoulders - Guclu dusus!"}
+        return {"detected": False, "signal": "NEUTRAL", "score": 0}
+
+    def detect_inverse_head_shoulders(self, df, tolerance=0.015):
+        """Inverse H&S — guclu yukselis formasyonu."""
+        if len(df) < 60:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        _, swing_lows = self._find_swing_points(df, window=5)
+        if len(swing_lows) < 3:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        sl1, sl2, sl3 = swing_lows[-3], swing_lows[-2], swing_lows[-1]
+        head, left_s, right_s = sl2[1], sl1[1], sl3[1]
+        if head < left_s and head < right_s:
+            if abs(left_s - right_s) / left_s < tolerance * 2:
+                neckline = df["high"].iloc[sl1[0]:sl3[0]+1].max()
+                if df["close"].iloc[-1] > neckline * 0.99:
+                    return {"detected": True, "pattern": "INVERSE_H_S",
+                            "signal": "BUY", "score": 30,
+                            "description": "Ters H&S - Guclu yukselis!"}
+        return {"detected": False, "signal": "NEUTRAL", "score": 0}
+
+    def detect_triangle(self, df):
+        """Ascending/Descending Triangle formasyonu."""
+        if len(df) < 40:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        swing_highs, swing_lows = self._find_swing_points(df, window=4)
+        if len(swing_highs) < 3 or len(swing_lows) < 3:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        hv = [h[1] for h in swing_highs[-3:]]
+        lv = [l[1] for l in swing_lows[-3:]]
+        h_flat = all(abs(hv[i] - hv[0]) / hv[0] < 0.015 for i in range(len(hv)))
+        l_rising = all(lv[i] <= lv[i+1] for i in range(len(lv)-1))
+        h_falling = all(hv[i] >= hv[i+1] for i in range(len(hv)-1))
+        l_flat = all(abs(lv[i] - lv[0]) / lv[0] < 0.015 for i in range(len(lv)))
+        if h_flat and l_rising:
+            if df["close"].iloc[-1] > np.mean(hv) * 0.99:
+                return {"detected": True, "pattern": "ASC_TRIANGLE",
+                        "signal": "BUY", "score": 25,
+                        "description": "Yukselen Ucgen - Breakout!"}
+        if l_flat and h_falling:
+            if df["close"].iloc[-1] < np.mean(lv) * 1.01:
+                return {"detected": True, "pattern": "DESC_TRIANGLE",
+                        "signal": "SELL", "score": -25,
+                        "description": "Dusen Ucgen - Breakdown!"}
+        return {"detected": False, "signal": "NEUTRAL", "score": 0}
+
+    def detect_flag(self, df, trend_bars=15, flag_bars=10):
+        """Bull/Bear Flag — devam formasyonu."""
+        if len(df) < trend_bars + flag_bars + 5:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        trend_end = -flag_bars
+        trend_start = -(trend_bars + flag_bars)
+        trend_chg = (df["close"].iloc[trend_end] - df["close"].iloc[trend_start]) / df["close"].iloc[trend_start]
+        flag_data = df.iloc[-flag_bars:]
+        flag_range = (flag_data["high"].max() - flag_data["low"].min()) / flag_data["close"].mean()
+        if trend_chg > 0.05 and flag_range < 0.03:
+            if df["close"].iloc[-1] > flag_data["high"].max() * 0.995:
+                return {"detected": True, "pattern": "BULL_FLAG",
+                        "signal": "BUY", "score": 20,
+                        "description": f"Boga Bayragi - %{trend_chg*100:.0f} devam!"}
+        if trend_chg < -0.05 and flag_range < 0.03:
+            if df["close"].iloc[-1] < flag_data["low"].min() * 1.005:
+                return {"detected": True, "pattern": "BEAR_FLAG",
+                        "signal": "SELL", "score": -20,
+                        "description": f"Ayi Bayragi - %{abs(trend_chg)*100:.0f} devam!"}
+        return {"detected": False, "signal": "NEUTRAL", "score": 0}
+
+    def detect_cup_handle(self, df, lookback=60):
+        """Cup & Handle — guclu yukselis formasyonu."""
+        if len(df) < lookback:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        closes = df.tail(lookback)["close"].values
+        cup_start = np.mean(closes[:5])
+        cup_end = np.mean(closes[-10:-5]) if len(closes) > 15 else closes[-1]
+        cup_bottom = min(closes[10:-10]) if len(closes) > 25 else min(closes)
+        cup_depth = (cup_start - cup_bottom) / cup_start if cup_start > 0 else 0
+        edge_diff = abs(cup_start - cup_end) / cup_start if cup_start > 0 else 1
+        if 0.03 < cup_depth < 0.30 and edge_diff < 0.03:
+            handle = closes[-5:]
+            handle_drop = (max(handle) - min(handle)) / max(handle) if max(handle) > 0 else 1
+            if handle_drop < cup_depth * 0.5 and closes[-1] > max(cup_start, cup_end) * 0.98:
+                return {"detected": True, "pattern": "CUP_HANDLE",
+                        "signal": "BUY", "score": 30,
+                        "description": f"Fincan & Kulp - %{cup_depth*100:.0f} derinlik!"}
+        return {"detected": False, "signal": "NEUTRAL", "score": 0}
+
+    def detect_wedge(self, df, lookback=30):
+        """Rising/Falling Wedge formasyonu."""
+        if len(df) < lookback:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        recent = df.tail(lookback)
+        sh, sl = self._find_swing_points(recent, window=3)
+        if len(sh) < 3 or len(sl) < 3:
+            return {"detected": False, "signal": "NEUTRAL", "score": 0}
+        hv = [h[1] for h in sh[-3:]]
+        lv = [l[1] for l in sl[-3:]]
+        h_up = all(hv[i] < hv[i+1] for i in range(len(hv)-1))
+        l_up = all(lv[i] < lv[i+1] for i in range(len(lv)-1))
+        h_dn = all(hv[i] > hv[i+1] for i in range(len(hv)-1))
+        l_dn = all(lv[i] > lv[i+1] for i in range(len(lv)-1))
+        narrowing = (hv[-1] - lv[-1]) < (hv[0] - lv[0]) * 0.7
+        if h_up and l_up and narrowing:
+            return {"detected": True, "pattern": "RISING_WEDGE",
+                    "signal": "SELL", "score": -20,
+                    "description": "Yukselen Kama - Dusus bekleniyor!"}
+        if h_dn and l_dn and narrowing:
+            return {"detected": True, "pattern": "FALLING_WEDGE",
+                    "signal": "BUY", "score": 20,
+                    "description": "Dusen Kama - Yukselis bekleniyor!"}
+        return {"detected": False, "signal": "NEUTRAL", "score": 0}
+
+    # ============================================================
+    # 6. KAPSAMLI ANALIZ (TUM DESENLER)
     # ============================================================
 
     def analyze_all(self, df: pd.DataFrame) -> Dict:
-        """
-        Tüm desen analizlerini çalıştırır ve birleştirilmiş skor verir.
-        Bu fonksiyon crypto_bot.py tarafından çağrılır.
-        """
-        results = {
-            "fibonacci": {"score": 0, "signal": "NEUTRAL"},
-            "support_resistance": {"score": 0, "signal": "NEUTRAL"},
-            "double_top": {"score": 0, "signal": "NEUTRAL"},
-            "double_bottom": {"score": 0, "signal": "NEUTRAL"},
-            "candlestick": {"score": 0, "signal": "NEUTRAL"},
-        }
-
+        """Tum desen analizlerini calistirir ve birlestirilmis skor verir."""
         total_score = 0
         reasons = []
 
-        # Fibonacci
-        try:
-            fib = self.fibonacci_levels(df)
-            results["fibonacci"] = fib
-            total_score += fib["score"]
-            if fib["score"] != 0:
-                reasons.append(
-                    f"Fib:{fib['nearest_level']}% "
-                    f"({fib['signal']}, yakınlık:{fib['nearest_distance_pct']}%)"
-                )
-        except Exception as e:
-            logger.debug(f"Fibonacci hatasi: {e}")
+        # Temel analizler
+        for name, func in [
+            ("Fib", lambda: self.fibonacci_levels(df)),
+            ("S/R", lambda: self.support_resistance(df)),
+            ("DT", lambda: self.detect_double_top(df)),
+            ("DB", lambda: self.detect_double_bottom(df)),
+            ("Mum", lambda: self.detect_candlestick_patterns(df)),
+        ]:
+            try:
+                r = func()
+                total_score += r.get("score", 0)
+                if name == "Fib" and r["score"] != 0:
+                    reasons.append(f"Fib:{r.get('nearest_level','?')}%")
+                elif name == "S/R" and r["score"] > 0:
+                    reasons.append(f"Destek")
+                elif name == "S/R" and r["score"] < 0:
+                    reasons.append(f"Direnc")
+                elif name == "DT" and r.get("detected"):
+                    reasons.append("IKILI_TEPE!")
+                elif name == "DB" and r.get("detected"):
+                    reasons.append("IKILI_DIP!")
+                elif name == "Mum":
+                    for p in r.get("patterns", []):
+                        reasons.append(f"Mum:{p['name']}")
+            except Exception:
+                pass
 
-        # Destek / Direnç
-        try:
-            sr = self.support_resistance(df)
-            results["support_resistance"] = sr
-            total_score += sr["score"]
-            if sr["score"] > 0 and sr["nearest_support"]:
-                reasons.append(f"Destek:${sr['nearest_support']:,.4f}")
-            elif sr["score"] < 0 and sr["nearest_resistance"]:
-                reasons.append(f"Direnc:${sr['nearest_resistance']:,.4f}")
-        except Exception as e:
-            logger.debug(f"S/R hatasi: {e}")
+        # Discretionary formasyonlar
+        for func in [
+            self.detect_head_shoulders,
+            self.detect_inverse_head_shoulders,
+            self.detect_triangle,
+            self.detect_flag,
+            self.detect_cup_handle,
+            self.detect_wedge,
+        ]:
+            try:
+                r = func(df)
+                total_score += r.get("score", 0)
+                if r.get("detected"):
+                    reasons.append(f"{r['pattern']}!")
+            except Exception:
+                pass
 
-        # Double Top
-        try:
-            dt = self.detect_double_top(df)
-            results["double_top"] = dt
-            total_score += dt["score"]
-            if dt.get("detected"):
-                reasons.append(f"IKILI_TEPE (satis!)")
-        except Exception as e:
-            logger.debug(f"Double top hatasi: {e}")
-
-        # Double Bottom
-        try:
-            db = self.detect_double_bottom(df)
-            results["double_bottom"] = db
-            total_score += db["score"]
-            if db.get("detected"):
-                reasons.append(f"IKILI_DIP (alis!)")
-        except Exception as e:
-            logger.debug(f"Double bottom hatasi: {e}")
-
-        # Candlestick
-        try:
-            cs = self.detect_candlestick_patterns(df)
-            results["candlestick"] = cs
-            total_score += cs["score"]
-            for p in cs.get("patterns", []):
-                reasons.append(f"Mum:{p['name']}")
-        except Exception as e:
-            logger.debug(f"Candlestick hatasi: {e}")
-
-        # Birleştirilmiş sinyal
-        if total_score >= 20:
-            combined_signal = "STRONG_BUY"
+        # Sinyal
+        if total_score >= 25:
+            sig = "STRONG_BUY"
         elif total_score >= 10:
-            combined_signal = "BUY"
-        elif total_score <= -20:
-            combined_signal = "STRONG_SELL"
+            sig = "BUY"
+        elif total_score <= -25:
+            sig = "STRONG_SELL"
         elif total_score <= -10:
-            combined_signal = "SELL"
+            sig = "SELL"
         else:
-            combined_signal = "NEUTRAL"
+            sig = "NEUTRAL"
 
-        return {
-            "pattern_score": total_score,
-            "pattern_signal": combined_signal,
-            "reasons": reasons,
-            "details": results,
-        }
+        return {"pattern_score": total_score, "pattern_signal": sig, "reasons": reasons}
+
