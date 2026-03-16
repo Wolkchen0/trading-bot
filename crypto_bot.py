@@ -770,9 +770,11 @@ class CryptoBot:
                 # Açık pozisyonları yönet
                 self.manage_positions()
 
-                # Açık pozisyon sayısını kontrol et
+                # Acik pozisyon sayisini kontrol et (micro pozisyonlari sayma!)
                 open_positions = self.client.get_all_positions()
-                open_count = len(open_positions)
+                real_positions = [p for p in open_positions 
+                                  if float(p.qty) * float(p.current_price) >= 5.0]
+                open_count = len(real_positions)
 
                 # Her coin'i analiz et
                 for symbol in CRYPTO_CONFIG["symbols"]:
@@ -790,12 +792,12 @@ class CryptoBot:
 
                     analysis = self.analyze_with_news(df, symbol)
 
-                    # BUY sinyali
+                    # BUY sinyali (scalp: daha dusuk guven esigi)
                     if (
                         analysis["signal"] == "BUY"
-                        and analysis["confidence"] >= 50
+                        and analysis["confidence"] >= 40
                         and open_count < CRYPTO_CONFIG["max_open_positions"]
-                        and symbol not in [p.symbol.replace("USD", "/USD") for p in open_positions]
+                        and symbol not in [p.symbol.replace("USD", "/USD") for p in real_positions]
                     ):
                         news_info = f" | Haber: {analysis.get('news_score', 0)}"
                         logger.info(
