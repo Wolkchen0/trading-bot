@@ -12,5 +12,5 @@ COPY . .
 # Log klasörünü oluştur
 RUN mkdir -p logs
 
-# Bot'u başlat
-CMD ["python", "-u", "crypto_bot.py"]
+# Watchdog ile botu başlat (7/24 canlı tutar, çökerse yeniden başlatır)
+CMD ["python", "-u", "run_bot.py"]

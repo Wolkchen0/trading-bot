@@ -13,6 +13,7 @@ import sys
 import time
 import json
 import argparse
+import atexit
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -61,71 +62,119 @@ from core.ml_predictor import MLPredictor
 # -----------------------------------------------
 CRYPTO_CONFIG = {
     # ============================================================
-    # KRIZ + GUNLUK KAZANC MODU
+    # KUCUK HESAP ($500-1000) GUNLUK KAZANC MODU
+    # ============================================================
+    # Backtest sonucu: $1000 ile 30 gunde 24 islem, -$28.82
+    # Sorun: Komisyon ($29) > Gercek kayip ($0) → az ama kaliteli islem!
+    # Hedef: Gunluk $3-10 net kazanc ($500 hesap = %0.6-2/gun)
     # ============================================================
 
-    # Coin secimi: VOLATILITE ODAKLI (kucuk hesapta % onemli, $ degil)
+    # Coin secimi: AZALTILDI — sadece iyi performans gosteren coinler
+    # Backtest sonucu: AVAX ve XRP karli, BTC ve DOT zararli
     "symbols": [
-        # TIER 1 — Yuksek likidite + iyi volatilite
-        "SOL/USD", "ETH/USD", "XRP/USD",
-        # TIER 2 — Yuksek volatilite (gunluk %3-8 hareket)
-        "DOGE/USD", "AVAX/USD", "LINK/USD", "AAVE/USD",
-        # TIER 3 — Cok yuksek volatilite (gunluk %5-15 hareket)
-        "PEPE/USD", "BONK/USD", "WIF/USD", "SHIB/USD",
-        # TIER 4 — Safe haven + buyuk piyasa
+        # TIER 1 — Backtest'te karli + yuksek likidite
+        "SOL/USD", "XRP/USD", "AVAX/USD",
+        # TIER 2 — Iyi volatilite, likidite yeterli
+        "DOGE/USD", "LINK/USD", "ETH/USD",
+        # TIER 3 — Yuksek volatilite (firsatci)
+        "PEPE/USD", "SHIB/USD",
+        # TIER 4 — Dusuk oncelik (buyuk hesaplar icin)
         "BTC/USD", "ADA/USD", "DOT/USD", "LTC/USD",
-        # TIER 5 — Firsatci
-        "ARB/USD", "UNI/USD", "RENDER/USD", "TRUMP/USD",
     ],
 
-    # Pozisyon agirliklari ($500 hesaba gore)
+    # Pozisyon agirliklari ($500 hesaba gore — komisyon etkisi dusunuldu)
+    # Buyuk agirlik = daha cok yatirim → komisyon orani azalir
     "tier_weights": {
-        "SOL/USD": 0.40, "ETH/USD": 0.35, "XRP/USD": 0.35,
-        "DOGE/USD": 0.30, "AVAX/USD": 0.30, "LINK/USD": 0.30,
-        "AAVE/USD": 0.30,
-        "PEPE/USD": 0.25, "BONK/USD": 0.25, "WIF/USD": 0.25,
-        "BTC/USD": 0.30,
+        "SOL/USD": 0.45, "XRP/USD": 0.40, "AVAX/USD": 0.40,  # Karli coinler
+        "DOGE/USD": 0.35, "LINK/USD": 0.35, "ETH/USD": 0.30,
+        "PEPE/USD": 0.25, "SHIB/USD": 0.25,
+        "BTC/USD": 0.15,  # Backtest: BTC kucuk hesapta zarari buyuk
+        "ADA/USD": 0.20, "DOT/USD": 0.20, "LTC/USD": 0.20,
     },
     "default_tier_weight": 0.20,
 
-    # === RISK YONETIMI ($500-1000 HESAP) ===
+    # === RISK YONETIMI ($500-1000 GERCEK HESAP) ===
     "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
-    "max_position_pct": 0.40,           # Tek pozisyon max %40 ($500 = $200)
-    "max_open_positions": 2,            # SADECE 2 pozisyon (sermayeyi yogunlastir)
-    "cash_reserve_pct": 0.15,           # %15 nakit rezerv
+    "max_position_pct": 0.45,           # Tek pozisyon max %45 ($500 = $225)
+    "max_open_positions": 2,            # Max 2 pozisyon ($500'de yogunlastir)
+    "cash_reserve_pct": 0.10,           # %10 nakit rezerv ($500 = $50 yedek)
+    "micro_account_threshold": 600,     # $600 altinda ekstra koruma
 
-    # === SCALP HEDEFLERI (GUNLUK KAZANC) ===
-    "stop_loss_pct": 0.012,             # %1.2 stop-loss ($200 pozisyon = $2.4 kayip)
-    "take_profit_pct": 0.025,           # %2.5 take-profit ($200 poz = $5 kazanc)
-    "trailing_stop_pct": 0.008,         # %0.8 trailing stop (kari kilitle)
-    "partial_profit_pct": 0.018,        # %1.8'de yarisini sat
+    # === SCALP HEDEFLERI (KUCUK HESAP OPTIMIZE) ===
+    # Komisyon gidis-donus: %0.5 → kari en az %1.0 olmali
+    # Risk/Odul: 1:2.3 (iyi oran)
+    "stop_loss_pct": 0.015,             # %1.5 stop (max kayip $500*45%*1.5% = $3.4)
+    "take_profit_pct": 0.035,           # %3.5 take-profit ($225 poz = $7.9 kazanc)
+    "trailing_stop_pct": 0.012,         # %1.2 trailing stop
+    "partial_profit_pct": 0.020,        # %2.0'de yarisini sat
 
-    # === SINYAL (AGRESIF — COK ISLEM) ===
-    "rsi_oversold": 32,                 # RSI 32 = dip (agresif alim)
-    "rsi_overbought": 70,               # RSI 70 = tepe
-    "bb_proximity_pct": 0.015,          # BB alt bant %1.5
-    "min_volume_ratio": 1.2,            # Volume 1.2x (scalp icin esnek)
+    # === SINYAL (KALITE ODAKLI — AZ AMA ISABETLI) ===
+    "rsi_oversold": 30,                 # RSI 30 = gercek dip (daha secici)
+    "rsi_overbought": 72,               # RSI 72 = tepe
+    "bb_proximity_pct": 0.012,          # BB alt bant %1.2 yakinlik
+    "min_volume_ratio": 1.3,            # Volume 1.3x (biraz daha secici)
     "trend_ema_period": 50,
 
     # === KOMISYON FARKINDALIGI ===
-    "commission_pct": 0.0025,
-    "min_trade_value": 5.0,             # Min $5 islem
+    "commission_pct": 0.0025,           # Alpaca %0.25
+    "min_trade_value": 10.0,            # Min $10 islem (komisyon etkisi icin)
 
-    # === ZAMANLAMA (SCALP HIZI) ===
-    "scan_interval_seconds": 10,        # Her 10 saniyede tara
-    "min_trade_interval_minutes": 3,    # Min 3 dakika
+    # === ZAMANLAMA (DINAMIK — GUCLU SINYAL = HIZLI ISLEM) ===
+    "scan_interval_seconds": 30,        # Her 30 saniyede tara
+    # Dinamik trade araligi: guclu sinyal hizli gir, zayif sinyal bekle
+    "min_interval_high_conf": 5,        # %65+ guven: 5dk (guclu firsat, kacirma)
+    "min_interval_med_conf": 10,        # %55-64 guven: 10dk
+    "min_interval_low_conf": 20,        # %50-54 guven: 20dk (zayif sinyal, bekle)
 
     # === KILL SWITCH (KUCUK HESAP KORUMASI) ===
-    "max_daily_loss_pct": 0.03,         # %3 gunluk kayip → dur ($500 = $15 max)
+    "max_daily_loss_pct": 0.025,        # %2.5 gunluk kayip ($500 = $12.5 max)
     "max_consecutive_errors": 5,
 }
+
+
+# Lock file ile çift instance koruması
+LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".crypto_bot.lock")
+
+def _acquire_lock():
+    """Lock file oluşturarak çift instance'ı engelle."""
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            # PID hala çalışıyor mu kontrol et
+            try:
+                os.kill(old_pid, 0)  # Sinyal göndermez, sadece varlık kontrolü
+                logger.error(
+                    f"UYARI: Baska bir CryptoBot instance'i zaten calisiyor (PID: {old_pid})!\n"
+                    f"  Eger eski instance kapandiysa, '{LOCK_FILE}' dosyasini silin."
+                )
+                sys.exit(1)
+            except (OSError, ProcessLookupError):
+                # Eski PID artık çalışmıyor, lock'u temizle
+                logger.warning(f"Eski lock temizlendi (PID {old_pid} artik calismiyor)")
+                os.remove(LOCK_FILE)
+        except (ValueError, IOError):
+            os.remove(LOCK_FILE)
+
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    atexit.register(_release_lock)
+
+def _release_lock():
+    """Bot kapanınca lock file'ı sil."""
+    try:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+    except Exception:
+        pass
 
 
 class CryptoBot:
     """$500-1000 gercek hesap icin optimize edilmis kripto trading botu."""
 
-
     def __init__(self, live: bool = False):
+        # Çift instance koruması
+        _acquire_lock()
         self.api_key = os.getenv("ALPACA_API_KEY", "")
         self.secret_key = os.getenv("ALPACA_SECRET_KEY", "")
 
@@ -134,7 +183,10 @@ class CryptoBot:
             sys.exit(1)
 
         self.is_paper = not live
-        self.client = TradingClient(self.api_key, self.secret_key, paper=self.is_paper)
+        # API timeout ayarı (bağlantı kopması koruması)
+        self.client = TradingClient(
+            self.api_key, self.secret_key, paper=self.is_paper
+        )
         self.crypto_data = CryptoHistoricalDataClient()
 
         # Hesap bilgisi
@@ -151,6 +203,7 @@ class CryptoBot:
         self.last_trade_time = {}
         self.positions = {}
         self.sell_cooldown = {}  # BUG FIX: satis dongusu onleme
+        self.cycle_count = 0    # Log azaltma: her döngüyü loglamak yerine
 
         # Haber analiz modülü
         self.news = NewsAnalyzer()
@@ -738,10 +791,12 @@ class CryptoBot:
 
     def run(self):
         """Ana trading döngüsü — 7/24 çalışır."""
-        logger.info("\nBot calisma moduna gecti...\n")
+        logger.info(f"\nBot calisma moduna gecti... (PID: {os.getpid()})\n")
 
         while self.running:
             try:
+                self.cycle_count += 1
+
                 # Kill switch kontrolleri
                 if self.consecutive_errors >= CRYPTO_CONFIG["max_consecutive_errors"]:
                     logger.error(
@@ -753,9 +808,16 @@ class CryptoBot:
                     break
 
                 # Günlük kayıp kontrolü
-                account = self.client.get_account()
-                self.equity = float(account.equity)
-                self.cash = float(account.cash)
+                try:
+                    account = self.client.get_account()
+                    self.equity = float(account.equity)
+                    self.cash = float(account.cash)
+                except Exception as api_err:
+                    logger.warning(f"API baglanti hatasi (yeniden deneniyor): {api_err}")
+                    self.consecutive_errors += 1
+                    time.sleep(10)
+                    continue
+
                 daily_change = (self.equity - self.starting_equity) / self.starting_equity
 
                 if daily_change <= -CRYPTO_CONFIG["max_daily_loss_pct"]:
@@ -776,14 +838,27 @@ class CryptoBot:
                                   if float(p.qty) * float(p.current_price) >= 5.0]
                 open_count = len(real_positions)
 
+                # Micro hesap korumasi: $600 altinda daha korumaci ol
+                max_positions = CRYPTO_CONFIG["max_open_positions"]
+                min_confidence = 50
+                if self.equity < CRYPTO_CONFIG.get("micro_account_threshold", 600):
+                    max_positions = 1  # Sadece 1 pozisyon
+                    min_confidence = 55  # Daha yuksek guven
+                    if self.cycle_count == 1:
+                        logger.warning(
+                            f"  MICRO HESAP MODU: ${self.equity:.0f} < "
+                            f"${CRYPTO_CONFIG['micro_account_threshold']} → "
+                            f"Max {max_positions} pozisyon, min %{min_confidence} guven"
+                        )
+
                 # Her coin'i analiz et
                 for symbol in CRYPTO_CONFIG["symbols"]:
-                    # Min işlem aralığı kontrolü
+                    # Dinamik trade araligi: once minimum 5dk bekle
                     last_time = self.last_trade_time.get(symbol)
                     if last_time:
                         elapsed = (datetime.now() - last_time).total_seconds() / 60
-                        if elapsed < CRYPTO_CONFIG["min_trade_interval_minutes"]:
-                            continue
+                        if elapsed < CRYPTO_CONFIG.get("min_interval_high_conf", 5):
+                            continue  # En az 5dk bekle (her durumda)
 
                     # Veri çek & analiz et (TEKNİK + HABER)
                     df = self.get_crypto_bars(symbol, days=14)
@@ -792,11 +867,23 @@ class CryptoBot:
 
                     analysis = self.analyze_with_news(df, symbol)
 
-                    # BUY sinyali (scalp: daha dusuk guven esigi)
+                    # Dinamik trade araligi: guven skoru yuksekse daha az bekle
+                    if last_time and analysis["signal"] == "BUY":
+                        elapsed = (datetime.now() - last_time).total_seconds() / 60
+                        if analysis["confidence"] >= 65:
+                            req_wait = CRYPTO_CONFIG.get("min_interval_high_conf", 5)
+                        elif analysis["confidence"] >= 55:
+                            req_wait = CRYPTO_CONFIG.get("min_interval_med_conf", 10)
+                        else:
+                            req_wait = CRYPTO_CONFIG.get("min_interval_low_conf", 20)
+                        if elapsed < req_wait:
+                            continue
+
+                    # BUY sinyali (micro hesap korumasi dahil)
                     if (
                         analysis["signal"] == "BUY"
-                        and analysis["confidence"] >= 40
-                        and open_count < CRYPTO_CONFIG["max_open_positions"]
+                        and analysis["confidence"] >= min_confidence
+                        and open_count < max_positions
                         and symbol not in [p.symbol.replace("USD", "/USD") for p in real_positions]
                     ):
                         news_info = f" | Haber: {analysis.get('news_score', 0)}"
@@ -812,12 +899,14 @@ class CryptoBot:
                 # Hata sayacını sıfırla (başarılı döngü)
                 self.consecutive_errors = 0
 
-                # Durum raporu
-                self._print_status()
+                # Durum raporu — her 5 döngüde bir yaz (log şişmesini önle)
+                if self.cycle_count % 5 == 0 or self.trades_today:
+                    self._print_status()
 
                 # Bekleme
                 interval = CRYPTO_CONFIG["scan_interval_seconds"]
-                logger.info(f"  Bekleniyor ({interval}s)...\n")
+                if self.cycle_count % 5 == 0:
+                    logger.info(f"  Bekleniyor ({interval}s)...\n")
                 time.sleep(interval)
 
             except KeyboardInterrupt:

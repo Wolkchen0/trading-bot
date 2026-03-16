@@ -1,14 +1,16 @@
 """
 Loglama Sistemi - Tüm bot aktivitelerini loglar.
+Process ID ekleyerek çift instance sorunlarını tespit eder.
 """
 import logging
 import os
+import sys
 from datetime import datetime
 from config import LOG_CONFIG
 
 
 def setup_logger(name: str = "TradingBot") -> logging.Logger:
-    """Ana logger'ı oluşturur ve yapılandırır."""
+    """Ana logger'ı oluşturur ve yapılandırır. PID ile çoklu instance tespiti."""
     log_dir = LOG_CONFIG["log_dir"]
     os.makedirs(log_dir, exist_ok=True)
 
@@ -26,9 +28,10 @@ def setup_logger(name: str = "TradingBot") -> logging.Logger:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
 
-    # Format
+    # Format — PID eklendi (çift instance tespiti için)
+    pid = os.getpid()
     formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        f"%(asctime)s | %(levelname)-8s | %(name)s[{pid}] | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     file_handler.setFormatter(formatter)
