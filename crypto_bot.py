@@ -422,10 +422,10 @@ class CryptoBot:
             sell_score += 10
 
         # === KARAR ===
-        if buy_score >= 50:
+        if buy_score >= 40:
             signal = "BUY"
             confidence = min(buy_score, 100)
-        elif sell_score >= 50:
+        elif sell_score >= 40:
             signal = "SELL"
             confidence = min(sell_score, 100)
         else:
@@ -886,10 +886,10 @@ class CryptoBot:
 
                 # Micro hesap korumasi: $600 altinda daha korumaci ol
                 max_positions = CRYPTO_CONFIG["max_open_positions"]
-                min_confidence = 50
+                min_confidence = 45
                 if self.equity < CRYPTO_CONFIG.get("micro_account_threshold", 600):
                     max_positions = 1  # Sadece 1 pozisyon
-                    min_confidence = 55  # Daha yuksek guven
+                    min_confidence = 45  # Kucuk hesap icin daha erisilebilir esik
                     if self.cycle_count == 1:
                         logger.warning(
                             f"  MICRO HESAP MODU: ${self.equity:.0f} < "
