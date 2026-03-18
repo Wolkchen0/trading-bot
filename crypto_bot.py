@@ -58,6 +58,11 @@ from core.ml_predictor import MLPredictor
 #
 # $500 ile gunluk hedef: $5-15 (%1-3)
 # $1000 ile gunluk hedef: $10-30 (%1-3)
+#
+# LIVE GUVENLIK KATMANLARI:
+# 1. .env TRADING_MODE=live secece live calisir
+# 2. max_position_usd yerine live_max_position_usd kullanilir (daha dusuk)
+# 3. equity_floor: hesap bu seviyenin altina duserse bot durur
 # Aylik bilesik: %30-90 potansiyel (agresif)
 # -----------------------------------------------
 CRYPTO_CONFIG = {
@@ -96,10 +101,12 @@ CRYPTO_CONFIG = {
     # === RISK YONETIMI ($500-1000 GERCEK HESAP) ===
     "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
     "max_position_pct": 0.45,           # Tek pozisyon max %45 ($500 = $225)
-    "max_position_usd": 300,            # MUTLAK LIMIT: max $300 per pozisyon (paper+gercek)
+    "max_position_usd": 300,            # MUTLAK LIMIT: paper'da max $300
+    "live_max_position_usd": 150,       # LIVE LIMIT: gercek parada max $150 (guvenlika)
     "max_open_positions": 2,            # Max 2 pozisyon ($500'de yogunlastir)
     "cash_reserve_pct": 0.10,           # %10 nakit rezerv ($500 = $50 yedek)
     "micro_account_threshold": 600,     # $600 altinda ekstra koruma
+    "equity_floor_pct": 0.80,           # LIVE: hesap baslangicin %80'ine duserse DUR ($500=%400)
 
     # === SCALP HEDEFLERI (KUCUK HESAP OPTIMIZE) ===
     # Komisyon gidis-donus: %0.5 → kari en az %1.0 olmali
@@ -183,8 +190,16 @@ class CryptoBot:
             logger.error("API key bulunamadi! .env dosyasini kontrol edin.")
             sys.exit(1)
 
+        # === LIVE MOD GUVENLIK KONTROLU ===
+        env_mode = os.getenv("TRADING_MODE", "paper").lower()
+        if live and env_mode != "live":
+            logger.error(
+                "GUVENLIK: --live parametresi verildi ama .env'de TRADING_MODE=live degil!\n"
+                "  Gercek para icin .env dosyasinda TRADING_MODE=live yapmaniz gerekiyor."
+            )
+            sys.exit(1)
+
         self.is_paper = not live
-        # API timeout ayarı (bağlantı kopması koruması)
         self.client = TradingClient(
             self.api_key, self.secret_key, paper=self.is_paper
         )
@@ -196,6 +211,16 @@ class CryptoBot:
         self.starting_equity = self.equity
         self.cash = float(account.cash)
 
+        # LIVE: Equity floor — bu seviyenin altina duserse bot DURUR
+        floor_pct = CRYPTO_CONFIG.get("equity_floor_pct", 0.80)
+        self.equity_floor = self.starting_equity * floor_pct if not self.is_paper else 0
+
+        # LIVE: Pozisyon limiti (paper'dan daha dusuk)
+        if not self.is_paper:
+            self.max_pos_usd = CRYPTO_CONFIG.get("live_max_position_usd", 150)
+        else:
+            self.max_pos_usd = CRYPTO_CONFIG.get("max_position_usd", 300)
+
         # Durum
         self.running = True
         self.consecutive_errors = 0
@@ -204,7 +229,7 @@ class CryptoBot:
         self.last_trade_time = {}
         self.positions = {}
         self.sell_cooldown = {}  # BUG FIX: satis dongusu onleme
-        self.cycle_count = 0    # Log azaltma: her döngüyü loglamak yerine
+        self.cycle_count = 0
 
         # Haber analiz modülü
         self.news = NewsAnalyzer()
@@ -221,21 +246,27 @@ class CryptoBot:
         self.ml = MLPredictor()
 
         # Loglama
-        mode = "PAPER" if self.is_paper else "LIVE"
+        mode = "PAPER" if self.is_paper else "*** LIVE ***"
         logger.info("=" * 60)
         logger.info(f"  KRIPTO TRADING BOT BASLATILDI [{mode}]")
         logger.info(f"  Bakiye: ${self.equity:,.2f}")
+        logger.info(f"  Max pozisyon: ${self.max_pos_usd} per trade")
         logger.info(f"  Coinler: {', '.join(CRYPTO_CONFIG['symbols'])}")
-        logger.info(f"  Max pozisyon: {CRYPTO_CONFIG['max_open_positions']}")
         logger.info(f"  Stop-loss: {CRYPTO_CONFIG['stop_loss_pct']:.0%}")
         logger.info(f"  Take-profit: {CRYPTO_CONFIG['take_profit_pct']:.0%}")
+        if not self.is_paper:
+            logger.info(f"  Equity Floor: ${self.equity_floor:,.2f} (altina duserse DUR)")
         logger.info("=" * 60)
 
         if not self.is_paper:
+            logger.warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             logger.warning("!!! GERCEK PARA MODU AKTIF !!!")
             logger.warning(f"!!! Bakiye: ${self.equity:,.2f} !!!")
-            logger.warning("!!! 10 saniye icinde basliyor... Ctrl+C ile iptal !!!")
-            time.sleep(10)
+            logger.warning(f"!!! Max pozisyon: ${self.max_pos_usd} !!!")
+            logger.warning(f"!!! Equity floor: ${self.equity_floor:,.2f} !!!")
+            logger.warning("!!! 15 saniye icinde basliyor... !!!")
+            logger.warning("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            time.sleep(15)
 
     # ============================================================
     # VERİ ÇEKME
@@ -545,14 +576,22 @@ class CryptoBot:
     # ============================================================
 
     def execute_buy(self, symbol: str, analysis: Dict) -> bool:
-        """Alis emri gonderir — KRIZ MODU pozisyon boyutlandirmasi."""
+        """Alis emri gonderir — LIVE/PAPER pozisyon boyutlandirmasi."""
         try:
             # Pozisyon boyutu hesapla
             account = self.client.get_account()
             cash = float(account.cash)
             equity = float(account.equity)
-            
-            # Nakit rezerv kontrolu (krizde %20 nakit tut)
+
+            # LIVE: Equity floor kontrolu — hesap cok dustuyse ALIM YAPMA
+            if not self.is_paper and self.equity_floor > 0 and equity < self.equity_floor:
+                logger.warning(
+                    f"EQUITY FLOOR! Hesap ${equity:,.2f} < floor ${self.equity_floor:,.2f} — "
+                    f"Yeni alim yapilmiyor. Mevcut pozisyonlar korunuyor."
+                )
+                return False
+
+            # Nakit rezerv kontrolu
             cash_reserve = equity * CRYPTO_CONFIG.get("cash_reserve_pct", 0.20)
             available_cash = max(cash - cash_reserve, 0)
             
@@ -564,19 +603,19 @@ class CryptoBot:
             tier_weight = CRYPTO_CONFIG.get("tier_weights", {}).get(
                 symbol, CRYPTO_CONFIG.get("default_tier_weight", 0.15)
             )
-            # MUTLAK LIMIT: paper hesap $100K olsa bile max $300 pozisyon
-            max_position_usd = CRYPTO_CONFIG.get("max_position_usd", 300)
+            # self.max_pos_usd: live=$150, paper=$300
             max_invest = min(
                 available_cash * tier_weight,
                 equity * CRYPTO_CONFIG["max_position_pct"],
-                max_position_usd,  # Gercek hesap simülasyonu
+                self.max_pos_usd,
             )
 
             if max_invest < CRYPTO_CONFIG.get("min_trade_value", 10):
-                logger.warning(f"Yetersiz bakiye veya limit: ${max_invest:.2f} < min ${CRYPTO_CONFIG.get('min_trade_value', 10)}")
+                logger.warning(f"Yetersiz bakiye: ${max_invest:.2f} < min ${CRYPTO_CONFIG.get('min_trade_value', 10)}")
                 return False
 
-            logger.info(f"  Pozisyon boyutu: ${max_invest:.2f} (max: ${max_position_usd}, tier: {tier_weight:.0%})")
+            logger.info(f"  Pozisyon: ${max_invest:.2f} (limit: ${self.max_pos_usd}, tier: {tier_weight:.0%})")
+
 
 
             price = analysis["price"]
