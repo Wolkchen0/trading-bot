@@ -12,5 +12,5 @@ COPY . .
 # Log klasörünü oluştur
 RUN mkdir -p logs
 
-# Watchdog ile botu başlat (7/24 canlı tutar, çökerse yeniden başlatır)
-CMD ["python", "-u", "run_bot.py"]
+# LIVE MOD: Watchdog ile botu calistir (--live parametresi)
+CMD ["python", "-u", "run_bot.py", "--live"]
