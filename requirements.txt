@@ -25,6 +25,13 @@ vaderSentiment>=3.3.2
 # X (Twitter) Scraper — ücretsiz, API key gerekmez
 ntscraper>=0.3.0
 
+# FinBERT — Finansal domain NLP (Faz 2)
+transformers>=4.35.0
+torch>=2.1.0
+
+# Korelasyon Ağı (Faz 2)
+networkx>=3.0
+
 # Crypto - Multi Exchange Support
 ccxt>=4.0.0
 

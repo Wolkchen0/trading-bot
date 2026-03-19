@@ -46,6 +46,10 @@ from core.pattern_detector import PatternDetector
 from core.macro_data import MacroDataAnalyzer
 from core.ml_predictor import MLPredictor
 from core.fundamental_analyzer import FundamentalAnalyzer
+from core.finbert_analyzer import FinBERTAnalyzer
+from core.agent_coordinator import AgentCoordinator
+from core.esg_analyzer import ESGAnalyzer
+from core.correlation_network import CorrelationNetwork
 
 # ============================================================
 # KONFİGÜRASYON — $500-1000 GERCEK HESAP + KRIZ STRATEJISI
@@ -246,10 +250,25 @@ class CryptoBot:
         # ML Tahmin modeli
         self.ml = MLPredictor()
 
-        # Fundamental analiz (YENİ)
+        # Fundamental analiz
         self.fundamental = FundamentalAnalyzer()
         self.fundamental_cache = {}
         self.fundamental_last_check = {}
+
+        # === FAZ 2 MODÜLLERİ ===
+        # FinBERT NLP (VADER yerine derin öğrenme)
+        self.finbert = FinBERTAnalyzer()
+        finbert_status = self.finbert.get_status()
+        
+        # Multi-Agent Koordinatör (5 uzman ajan)
+        self.coordinator = AgentCoordinator()
+        
+        # ESG Analiz (kripto sürdürülebilirlik)
+        self.esg = ESGAnalyzer()
+        
+        # Korelasyon Ağı (bulaşma riski)
+        self.correlation = CorrelationNetwork()
+        self.correlation_last_update = None
 
         # Loglama
         mode = "PAPER" if self.is_paper else "*** LIVE ***"
@@ -260,7 +279,8 @@ class CryptoBot:
         logger.info(f"  Coinler: {', '.join(CRYPTO_CONFIG['symbols'])}")
         logger.info(f"  Stop-loss: {CRYPTO_CONFIG['stop_loss_pct']:.0%}")
         logger.info(f"  Take-profit: {CRYPTO_CONFIG['take_profit_pct']:.0%}")
-        logger.info(f"  Moduller: Teknik+Desen+Haber+Sosyal+Makro+ML+Fundamental")
+        logger.info(f"  NLP: {finbert_status['active_source'].upper()}")
+        logger.info(f"  Moduller: Teknik+Desen+Haber+Sosyal+Makro+ML+Fund+ESG+GNN+MultiAgent")
         if not self.is_paper:
             logger.info(f"  Equity Floor: ${self.equity_floor:,.2f} (altina duserse DUR)")
         logger.info("=" * 60)
@@ -701,6 +721,89 @@ class CryptoBot:
             logger.debug(f"Fundamental analiz hatasi {symbol}: {e}")
             tech["fundamental_score"] = 0
             tech["fundamental_signal"] = "NEUTRAL"
+
+        # === ESG ANALİZ (FAZ 2) ===
+        try:
+            esg_result = self.esg.get_esg_adjusted_signal(symbol, tech.get("confidence", 0))
+            tech["esg_total"] = esg_result["esg_total"]
+            tech["esg_risk"] = esg_result["esg_risk"]
+            tech["esg_multiplier"] = esg_result["esg_multiplier"]
+            
+            # ESG düşükse güveni azalt
+            if esg_result["esg_multiplier"] < 1.0:
+                tech["confidence"] = int(tech["confidence"] * esg_result["esg_multiplier"])
+                tech["reasons"].append(f"ESG:{esg_result['esg_total']}/100")
+        except Exception as e:
+            logger.debug(f"ESG hatasi {symbol}: {e}")
+
+        # === KORELASYON AĞI RİSKİ (FAZ 2) ===
+        contagion_risk_score = 0
+        try:
+            # Ağı saatte bir güncelle
+            if (self.correlation_last_update is None or
+                (datetime.now() - self.correlation_last_update).total_seconds() > 3600):
+                self.correlation.update_network()
+                self.correlation_last_update = datetime.now()
+            
+            # Düşen coinleri kontrol et
+            coin = symbol.replace("/USD", "").replace("USD", "")
+            contagion = self.correlation.detect_contagion_risk(coin)
+            contagion_risk_score = contagion.get("risk_score", 0)
+            
+            if contagion_risk_score > 50:
+                tech["reasons"].append(f"Bulasma_riski:{contagion_risk_score}")
+                if tech["signal"] == "BUY":
+                    tech["confidence"] = max(tech["confidence"] - 10, 0)
+            
+            tech["contagion_risk"] = contagion_risk_score
+        except Exception as e:
+            logger.debug(f"Korelasyon hatasi {symbol}: {e}")
+
+        # === MULTI-AGENT KARAR (FAZ 2) ===
+        try:
+            # Risk verisini hazırla
+            risk_data = {
+                "daily_pnl_pct": (self.daily_pnl / max(self.equity, 1)) * 100,
+                "open_positions": len(self.positions),
+                "max_positions": CRYPTO_CONFIG.get("max_open_positions", 2),
+                "atr_pct": (tech.get("atr", 0) / max(tech.get("price", 1), 0.01)) * 100,
+                "contagion_risk_score": contagion_risk_score,
+                "esg_risk_level": tech.get("esg_risk", "MEDIUM"),
+                "equity_floor_hit": not self.is_paper and self.equity < self.equity_floor,
+            }
+            
+            # Coordinator'dan nihai karar al
+            coord_result = self.coordinator.decide(
+                symbol=symbol,
+                tech_data=tech,
+                fund_data=self.fundamental_cache.get(symbol, {}),
+                sent_data={
+                    "news_score": tech.get("news_score", 0),
+                    "fear_greed_value": tech.get("fear_greed", {}).get("value", 50) if isinstance(tech.get("fear_greed"), dict) else 50,
+                    "fear_greed_signal": tech.get("news_signal", "NEUTRAL"),
+                    "sentiment_label": tech.get("news_signal", "NEUTRAL"),
+                },
+                social_data=tech.get("social_data", {}),
+                risk_data=risk_data,
+            )
+            
+            # Coordinator kararını uygula (mevcut sinyali override et)
+            if coord_result["majority"] or coord_result["risk_veto"]:
+                old_signal = tech["signal"]
+                tech["signal"] = coord_result["signal"]
+                tech["confidence"] = int(coord_result["confidence"])
+                if old_signal != tech["signal"]:
+                    tech["reasons"].append(
+                        f"Agent:{coord_result['signal']}("
+                        f"B:{coord_result['buy_count']}"
+                        f"S:{coord_result['sell_count']}"
+                        f"H:{coord_result['hold_count']})"
+                    )
+            
+            tech["coordinator"] = coord_result
+            
+        except Exception as e:
+            logger.debug(f"Coordinator hatasi {symbol}: {e}")
 
         return tech
 
