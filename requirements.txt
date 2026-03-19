@@ -22,6 +22,9 @@ tqdm>=4.67.0
 # NLP Sentiment Analysis
 vaderSentiment>=3.3.2
 
+# X (Twitter) Scraper — ücretsiz, API key gerekmez
+ntscraper>=0.3.0
+
 # Crypto - Multi Exchange Support
 ccxt>=4.0.0
 

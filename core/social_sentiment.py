@@ -1,13 +1,14 @@
 """
 Social Sentiment Analyzer — Gelişmiş Sosyal Medya Duygu Analizi
-Reddit, Google Trends, CoinGecko Trending ve Whale Alert.
+Reddit, X (Twitter), Google Trends, CoinGecko Trending ve Whale Alert.
 
 Kaynaklar:
   1. Reddit (r/cryptocurrency, r/bitcoin, r/altcoin) — Public JSON API
-  2. Google Trends — arama hacmi tespiti
-  3. CoinGecko Trending — trend olan coinler
-  4. Whale Alert — büyük transfer takibi (ücretsiz tier)
-  5. VADER NLP duygu analizi (ücretsiz, hafif)
+  2. X (Twitter) — ntscraper ile ücretsiz tweet analizi (YENİ)
+  3. Google Trends — arama hacmi tespiti
+  4. CoinGecko Trending — trend olan coinler
+  5. Whale Alert — büyük transfer takibi (ücretsiz tier)
+  6. VADER NLP duygu analizi (ücretsiz, hafif)
 """
 import os
 import time
@@ -24,6 +25,14 @@ try:
 except ImportError:
     VADER_AVAILABLE = False
     logger.debug("VADER yuklu degil, basit sentiment kullanilacak")
+
+# X (Twitter) scraper — ntscraper (ücretsiz, API key gerekmez)
+try:
+    from ntscraper import Nitter
+    X_AVAILABLE = True
+except ImportError:
+    X_AVAILABLE = False
+    logger.debug("ntscraper yuklu degil, X/Twitter analizi devre disi")
 
 
 SOCIAL_CONFIG = {
@@ -91,7 +100,7 @@ SOCIAL_CONFIG = {
 
 
 class SocialSentimentAnalyzer:
-    """Gelişmiş sosyal medya duygu analizi — Reddit, Trends, CoinGecko, Whale Alert."""
+    """Gelişmiş sosyal medya duygu analizi — Reddit, X, Trends, CoinGecko, Whale Alert."""
 
     def __init__(self):
         self.cache = {}
@@ -99,12 +108,22 @@ class SocialSentimentAnalyzer:
         self.trending_cache = None
         self.trending_cache_time = None
 
+        # X (Twitter) scraper
+        self.x_scraper = None
+        if X_AVAILABLE:
+            try:
+                self.x_scraper = Nitter(log_level=0)
+                logger.info("X/Twitter scraper baslatildi")
+            except Exception as e:
+                logger.debug(f"X scraper baslatma hatasi: {e}")
+
         # VADER NLP başlat
         if VADER_AVAILABLE:
             self.vader = SentimentIntensityAnalyzer()
             # Kripto-spesifik kelimeler ekle
             self._add_crypto_lexicon()
-            logger.info("SocialSentiment baslatildi - VADER NLP + CoinGecko + Whale aktif")
+            x_status = 'X aktif' if self.x_scraper else 'X devre disi'
+            logger.info(f"SocialSentiment baslatildi - VADER NLP + {x_status} + CoinGecko + Whale")
         else:
             self.vader = None
             logger.info("SocialSentiment baslatildi - Basit NLP modu")
@@ -375,7 +394,120 @@ class SocialSentimentAnalyzer:
         return result
 
     # ============================================================
-    # 5. NLP DUYGU ANALİZİ (İYİLEŞTİRİLMİŞ)
+    # 5. X (TWITTER) ANALİZİ (YENİ)
+    # ============================================================
+
+    def fetch_x_posts(self, coin: str) -> Dict:
+        """
+        X (Twitter) üzerinden kripto tweet'leri çek ve analiz et.
+        ntscraper kullanır — API key gerekmez, ücretsiz.
+        """
+        cache_key = f"x_{coin}"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        result = {
+            "score": 0,
+            "signal": "NEUTRAL",
+            "tweet_count": 0,
+            "avg_sentiment": 0,
+            "top_tweets": [],
+        }
+
+        if not self.x_scraper:
+            return result
+
+        try:
+            # Coin'e göre arama terimleri
+            search_terms = SOCIAL_CONFIG["coin_search_terms"].get(
+                coin, [coin.lower()]
+            )
+            search_query = f"${coin} OR {' OR '.join(search_terms)} crypto"
+
+            # ntscraper ile tweet çek
+            tweets_data = self.x_scraper.get_tweets(
+                search_query,
+                mode="term",
+                number=15,
+            )
+
+            tweets = tweets_data.get("tweets", [])
+            if not tweets:
+                self.cache[cache_key] = result
+                self.last_fetch[cache_key] = datetime.now()
+                return result
+
+            result["tweet_count"] = len(tweets)
+
+            # Her tweet'i analiz et
+            sentiments = []
+            top_tweets = []
+
+            for tweet in tweets[:15]:
+                text = tweet.get("text", "")
+                if not text:
+                    continue
+
+                sent = self.analyze_text_sentiment(text)
+                sentiments.append(sent["compound"])
+
+                # Etkileşim metrikleri
+                likes = tweet.get("stats", {}).get("likes", 0)
+                retweets = tweet.get("stats", {}).get("retweets", 0)
+                engagement = likes + retweets * 2
+
+                top_tweets.append({
+                    "text": text[:100],
+                    "sentiment": sent["label"],
+                    "score": sent["compound"],
+                    "engagement": engagement,
+                })
+
+            if sentiments:
+                # Engagement-weighted sentiment
+                total_engagement = sum(t["engagement"] for t in top_tweets) or 1
+                weighted_sent = sum(
+                    t["score"] * (t["engagement"] / total_engagement)
+                    for t in top_tweets
+                )
+
+                avg_sent = sum(sentiments) / len(sentiments)
+                # Weighted ve simple ortalamanın karışımı
+                combined = avg_sent * 0.4 + weighted_sent * 0.6
+
+                result["avg_sentiment"] = round(combined, 3)
+                result["top_tweets"] = sorted(
+                    top_tweets, key=lambda x: x["engagement"], reverse=True
+                )[:5]
+
+                # Skor
+                x_score = int(combined * 40)  # -40 ile +40 arası
+                x_score = max(-30, min(30, x_score))
+                result["score"] = x_score
+
+                if x_score >= 15:
+                    result["signal"] = "BULLISH"
+                elif x_score >= 5:
+                    result["signal"] = "SLIGHTLY_BULLISH"
+                elif x_score <= -15:
+                    result["signal"] = "BEARISH"
+                elif x_score <= -5:
+                    result["signal"] = "SLIGHTLY_BEARISH"
+
+                logger.info(
+                    f"  X/Twitter {coin}: {len(tweets)} tweet, "
+                    f"sentiment:{combined:.3f} -> skor:{x_score} {result['signal']}"
+                )
+
+        except Exception as e:
+            logger.debug(f"X/Twitter {coin} hatasi: {e}")
+
+        self.cache[cache_key] = result
+        self.last_fetch[cache_key] = datetime.now()
+        return result
+
+    # ============================================================
+    # 6. NLP DUYGU ANALİZİ (İYİLEŞTİRİLMİŞ)
     # ============================================================
 
     def analyze_text_sentiment(self, text: str) -> Dict:
@@ -457,19 +589,20 @@ class SocialSentimentAnalyzer:
         }
 
     # ============================================================
-    # 7. BİRLEŞTİRİLMİŞ SOSYAL SKOR (GELİŞTİRİLMİŞ)
+    # 8. BİRLEŞTİRİLMİŞ SOSYAL SKOR (GELİŞTİRİLMİŞ + X)
     # ============================================================
 
     def get_social_score(self, symbol: str) -> Dict:
         """
         Gelişmiş sosyal skor — tüm kaynaklar birleştirilmiş.
 
-        Ağırlıklar:
-          Reddit sentiment: %35
-          Google Trends: %15
-          CoinGecko Trending: %20
-          Whale Alert: %15
-          Sosyal hacim spike: %15
+        Ağırlıklar (X dahil):
+          Reddit sentiment: %25
+          X (Twitter):      %20
+          Google Trends:    %10
+          CoinGecko Trend:  %18
+          Whale Alert:      %14
+          Sosyal hacim:     %13
         """
         coin = symbol.replace("/USD", "").replace("USD", "")
 
@@ -492,29 +625,34 @@ class SocialSentimentAnalyzer:
         else:
             reddit_score = 0
 
-        # 2. Google Trends
+        # 2. X (Twitter) — YENİ
+        x_data = self.fetch_x_posts(coin)
+        x_score = x_data["score"]
+
+        # 3. Google Trends
         trends = self.get_google_trends_score(coin)
         trends_score = trends["score"]
 
-        # 3. CoinGecko Trending (YENİ)
+        # 4. CoinGecko Trending
         cg_trending = self.is_coin_trending(coin)
         trending_score = cg_trending["score"]
 
-        # 4. Whale Alert (YENİ)
+        # 5. Whale Alert
         whale = self.check_whale_activity(coin)
         whale_score = whale["score"]
 
-        # 5. Sosyal hacim spike
+        # 6. Sosyal hacim spike
         spike = self.detect_social_volume_spike(posts)
         spike_score = spike["score"]
 
-        # Birleştirilmiş skor
+        # Birleştirilmiş skor (X dahil)
         final_score = int(
-            reddit_score * 0.35 +
-            trends_score * 0.15 +
-            trending_score * 0.20 +
-            whale_score * 0.15 +
-            spike_score * 0.15
+            reddit_score * 0.25 +
+            x_score * 0.20 +
+            trends_score * 0.10 +
+            trending_score * 0.18 +
+            whale_score * 0.14 +
+            spike_score * 0.13
         )
 
         # Sinyal
@@ -537,6 +675,9 @@ class SocialSentimentAnalyzer:
             "reddit_avg_sentiment": round(
                 sum(reddit_sentiments) / max(len(reddit_sentiments), 1), 3
             ),
+            "x_score": x_score,
+            "x_tweets": x_data.get("tweet_count", 0),
+            "x_sentiment": x_data.get("avg_sentiment", 0),
             "google_trending": trends.get("trending", False),
             "coingecko_trending": cg_trending["trending"],
             "whale_score": whale_score,
@@ -545,10 +686,10 @@ class SocialSentimentAnalyzer:
             "spike_posts_1h": spike.get("posts_1h", 0),
         }
 
-        if posts or trends.get("trending") or cg_trending["trending"]:
+        if posts or x_data["tweet_count"] or trends.get("trending") or cg_trending["trending"]:
             logger.info(
-                f"  Sosyal {coin}: Reddit({len(posts)} post, "
-                f"skor:{reddit_score}) | "
+                f"  Sosyal {coin}: Reddit({len(posts)} post, skor:{reddit_score}) | "
+                f"X({x_data['tweet_count']} tweet, skor:{x_score}) | "
                 f"CGTrend:{'EVET' if cg_trending['trending'] else 'hayir'} | "
                 f"Whale:{whale_score} | "
                 f"Spike:{'EVET' if spike['spike'] else 'hayir'} | "
