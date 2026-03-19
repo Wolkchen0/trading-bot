@@ -1,12 +1,13 @@
 """
-Social Sentiment Analyzer — Sosyal Medya Duygu Analizi
-Reddit, Google Trends ve web'den kripto sentiment tarar.
+Social Sentiment Analyzer — Gelişmiş Sosyal Medya Duygu Analizi
+Reddit, Google Trends, CoinGecko Trending ve Whale Alert.
 
 Kaynaklar:
-  1. Reddit (r/cryptocurrency, r/bitcoin, r/altcoin) — PRAW veya web scraping
-  2. Google Trends — pytrends ile arama hacmi tespiti
-  3. Kripto-spesifik forum/haber tarama
-  4. VADER NLP duygu analizi (ücretsiz, hafif)
+  1. Reddit (r/cryptocurrency, r/bitcoin, r/altcoin) — Public JSON API
+  2. Google Trends — arama hacmi tespiti
+  3. CoinGecko Trending — trend olan coinler
+  4. Whale Alert — büyük transfer takibi (ücretsiz tier)
+  5. VADER NLP duygu analizi (ücretsiz, hafif)
 """
 import os
 import time
@@ -26,7 +27,7 @@ except ImportError:
 
 
 SOCIAL_CONFIG = {
-    # Reddit ayarları (pushshift/public API — hesap gerekmez)
+    # Reddit ayarları (public API — hesap gerekmez)
     "reddit_subs": [
         "cryptocurrency", "bitcoin", "ethereum",
         "altcoin", "CryptoMarkets", "SatoshiStreetBets",
@@ -36,6 +37,13 @@ SOCIAL_CONFIG = {
 
     # Google Trends
     "google_trends_enabled": True,
+
+    # CoinGecko Trending
+    "coingecko_trending_url": "https://api.coingecko.com/api/v3/search/trending",
+
+    # Whale Alert (ücretsiz tier)
+    "whale_alert_url": "https://api.whale-alert.io/v1/transactions",
+    "whale_min_usd": 1000000,  # $1M+ transferler
 
     # Coin anahtar kelimeleri
     "coin_search_terms": {
@@ -70,40 +78,60 @@ SOCIAL_CONFIG = {
         "moon", "rocket", "lambo", "to the moon", "diamond hands",
         "all in", "100x", "massive gains", "next bitcoin",
         "bullish af", "lfg", "huge pump", "generational wealth",
+        "buy the dip", "accumulate", "undervalued", "breakout",
     ],
     "extreme_bearish": [
         "crash", "rug pull", "scam", "ponzi", "dead coin",
         "going to zero", "sell everything", "bear market",
         "exit scam", "lost everything", "worst investment",
-        "paper hands", "bloodbath", "rekt",
+        "paper hands", "bloodbath", "rekt", "dump it",
+        "overvalued", "bubble", "collapse",
     ],
 }
 
 
 class SocialSentimentAnalyzer:
-    """Sosyal medya duygu analizi — Reddit, Google Trends, NLP."""
+    """Gelişmiş sosyal medya duygu analizi — Reddit, Trends, CoinGecko, Whale Alert."""
 
     def __init__(self):
         self.cache = {}
         self.last_fetch = {}
+        self.trending_cache = None
+        self.trending_cache_time = None
 
         # VADER NLP başlat
         if VADER_AVAILABLE:
             self.vader = SentimentIntensityAnalyzer()
-            logger.info("SocialSentiment baslatildi - VADER NLP aktif")
+            # Kripto-spesifik kelimeler ekle
+            self._add_crypto_lexicon()
+            logger.info("SocialSentiment baslatildi - VADER NLP + CoinGecko + Whale aktif")
         else:
             self.vader = None
             logger.info("SocialSentiment baslatildi - Basit NLP modu")
+
+    def _add_crypto_lexicon(self):
+        """VADER'a kripto-spesifik kelimeler ekle."""
+        if not self.vader:
+            return
+
+        crypto_words = {
+            "moon": 2.5, "mooning": 3.0, "bullish": 2.0, "bearish": -2.0,
+            "pump": 1.5, "dump": -2.0, "rekt": -3.0, "hodl": 1.5,
+            "fud": -1.5, "fomo": 1.0, "dip": -0.5, "rally": 2.0,
+            "rug": -3.5, "scam": -3.0, "hack": -2.5, "exploit": -2.5,
+            "adoption": 2.0, "partnership": 1.8, "upgrade": 1.5,
+            "breakout": 2.5, "crash": -3.0, "surge": 2.5,
+            "ath": 2.0, "accumulate": 1.5, "whale": 0.5,
+            "lambo": 2.0, "diamond": 1.5,
+        }
+        self.vader.lexicon.update(crypto_words)
 
     # ============================================================
     # 1. REDDİT ANALİZİ
     # ============================================================
 
     def fetch_reddit_posts(self, coin: str) -> List[Dict]:
-        """
-        Reddit'ten coin ile ilgili postları çeker.
-        Public JSON API kullanır — hesap gerekmez.
-        """
+        """Reddit'ten coin ile ilgili postları çeker."""
         cache_key = f"reddit_{coin}"
         if self._is_cached(cache_key):
             return self.cache[cache_key]
@@ -112,18 +140,18 @@ class SocialSentimentAnalyzer:
         search_terms = SOCIAL_CONFIG["coin_search_terms"].get(coin, [coin.lower()])
 
         headers = {
-            "User-Agent": "CryptoBot/1.0 (Trading Analysis)",
+            "User-Agent": "CryptoBot/2.0 (Advanced Trading Analysis)",
         }
 
-        for sub in SOCIAL_CONFIG["reddit_subs"][:3]:  # İlk 3 subreddit
-            for term in search_terms[:1]:  # İlk arama terimi
+        for sub in SOCIAL_CONFIG["reddit_subs"][:3]:
+            for term in search_terms[:1]:
                 try:
                     url = f"https://www.reddit.com/r/{sub}/search.json"
                     params = {
                         "q": term,
                         "sort": "new",
                         "limit": 10,
-                        "t": "day",  # Son 24 saat
+                        "t": "day",
                         "restrict_sr": "true",
                     }
                     response = requests.get(
@@ -143,7 +171,6 @@ class SocialSentimentAnalyzer:
                                 "created": post.get("created_utc", 0),
                             })
 
-                    # Rate limiting
                     time.sleep(1)
 
                 except Exception as e:
@@ -159,10 +186,7 @@ class SocialSentimentAnalyzer:
     # ============================================================
 
     def get_google_trends_score(self, coin: str) -> Dict:
-        """
-        Google Trends arama hacmi değişimini kontrol eder.
-        Arama hacmi artıyorsa → ilgi artıyor → potansiyel fiyat hareketi.
-        """
+        """Google Trends arama hacmi değişimini kontrol eder."""
         cache_key = f"trends_{coin}"
         if self._is_cached(cache_key):
             return self.cache[cache_key]
@@ -173,17 +197,14 @@ class SocialSentimentAnalyzer:
             return result
 
         try:
-            # SerpAPI veya basit Google Trends proxy
             search_terms = SOCIAL_CONFIG["coin_search_terms"].get(coin, [coin])
             term = search_terms[0]
 
-            # Google Trends daily API (ücretsiz)
-            url = f"https://trends.google.com/trends/api/dailytrends"
+            url = "https://trends.google.com/trends/api/dailytrends"
             params = {"hl": "en-US", "geo": "US", "ns": 15}
 
             response = requests.get(url, params=params, timeout=10)
             if response.status_code == 200:
-                # Google Trends JSON'ı ")]}" ile başlar, temizle
                 text = response.text
                 if text.startswith(")]}'"):
                     text = text[5:]
@@ -210,26 +231,164 @@ class SocialSentimentAnalyzer:
         return result
 
     # ============================================================
-    # 3. NLP DUYGU ANALİZİ
+    # 3. COİNGECKO TRENDING (YENİ)
+    # ============================================================
+
+    def get_coingecko_trending(self) -> Dict:
+        """CoinGecko'da trend olan coinleri çeker."""
+        # 15 dakika cache
+        if (self.trending_cache_time and
+            (datetime.now() - self.trending_cache_time).total_seconds() < 900):
+            return self.trending_cache or {}
+
+        try:
+            response = requests.get(
+                SOCIAL_CONFIG["coingecko_trending_url"],
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                trending_coins = {}
+
+                for coin_data in data.get("coins", []):
+                    item = coin_data.get("item", {})
+                    symbol = item.get("symbol", "").upper()
+                    trending_coins[symbol] = {
+                        "name": item.get("name", ""),
+                        "rank": item.get("market_cap_rank"),
+                        "score": item.get("score", 0),
+                        "price_btc": item.get("price_btc", 0),
+                    }
+
+                self.trending_cache = trending_coins
+                self.trending_cache_time = datetime.now()
+
+                if trending_coins:
+                    names = [v["name"] for v in list(trending_coins.values())[:5]]
+                    logger.info(f"  CoinGecko Trending: {', '.join(names)}")
+
+                return trending_coins
+
+        except Exception as e:
+            logger.debug(f"CoinGecko trending hatasi: {e}")
+
+        return {}
+
+    def is_coin_trending(self, coin: str) -> Dict:
+        """Belirli bir coinin CoinGecko'da trend olup olmadığını kontrol et."""
+        trending = self.get_coingecko_trending()
+        is_trending = coin in trending
+
+        return {
+            "trending": is_trending,
+            "score": 15 if is_trending else 0,
+            "signal": "BULLISH" if is_trending else "NEUTRAL",
+            "rank": trending.get(coin, {}).get("rank"),
+        }
+
+    # ============================================================
+    # 4. WHALE ALERT (YENİ)
+    # ============================================================
+
+    def check_whale_activity(self, coin: str) -> Dict:
+        """
+        Büyük kripto transferlerini kontrol et.
+        Exchange'e giriş = satış baskısı → BEARISH
+        Exchange'den çıkış = hodl → BULLISH
+        """
+        cache_key = f"whale_{coin}"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        result = {
+            "score": 0,
+            "signal": "NEUTRAL",
+            "large_transfers": 0,
+            "exchange_inflow": 0,
+            "exchange_outflow": 0,
+        }
+
+        whale_api_key = os.getenv("WHALE_ALERT_KEY", "")
+        if not whale_api_key:
+            # API key yoksa alternatif: CoinGecko data'dan çıkar
+            self.cache[cache_key] = result
+            self.last_fetch[cache_key] = datetime.now()
+            return result
+
+        try:
+            # Coin symbol -> blockchain mapping
+            blockchain_map = {
+                "BTC": "bitcoin", "ETH": "ethereum",
+                "SOL": "solana", "XRP": "ripple",
+                "DOGE": "dogecoin", "LTC": "litecoin",
+            }
+            blockchain = blockchain_map.get(coin)
+            if not blockchain:
+                return result
+
+            params = {
+                "api_key": whale_api_key,
+                "min_value": SOCIAL_CONFIG["whale_min_usd"],
+                "currency": coin.lower(),
+                "start": int((datetime.now() - timedelta(hours=24)).timestamp()),
+            }
+            response = requests.get(
+                SOCIAL_CONFIG["whale_alert_url"],
+                params=params,
+                timeout=15
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                transactions = data.get("transactions", [])
+                result["large_transfers"] = len(transactions)
+
+                exchange_inflow = 0
+                exchange_outflow = 0
+
+                for tx in transactions:
+                    amount_usd = tx.get("amount_usd", 0)
+                    to_owner = tx.get("to", {}).get("owner_type", "")
+                    from_owner = tx.get("from", {}).get("owner_type", "")
+
+                    if to_owner == "exchange":
+                        exchange_inflow += amount_usd
+                    if from_owner == "exchange":
+                        exchange_outflow += amount_usd
+
+                result["exchange_inflow"] = exchange_inflow
+                result["exchange_outflow"] = exchange_outflow
+
+                # Skor: outflow > inflow = BULLISH
+                if exchange_outflow > exchange_inflow * 1.5 and exchange_outflow > 5_000_000:
+                    result["score"] = 15
+                    result["signal"] = "BULLISH"
+                elif exchange_inflow > exchange_outflow * 1.5 and exchange_inflow > 5_000_000:
+                    result["score"] = -15
+                    result["signal"] = "BEARISH"
+
+        except Exception as e:
+            logger.debug(f"Whale Alert {coin} hatasi: {e}")
+
+        self.cache[cache_key] = result
+        self.last_fetch[cache_key] = datetime.now()
+        return result
+
+    # ============================================================
+    # 5. NLP DUYGU ANALİZİ (İYİLEŞTİRİLMİŞ)
     # ============================================================
 
     def analyze_text_sentiment(self, text: str) -> Dict:
         """
-        Metin duygu analizi — VADER NLP veya fallback.
-        
-        Returns:
-            compound: -1 (çok negatif) ile +1 (çok pozitif) arası skor
-            label: BULLISH, BEARISH, NEUTRAL
+        Gelişmiş metin duygu analizi — VADER NLP + kripto lexicon.
         """
         if not text:
             return {"compound": 0, "label": "NEUTRAL"}
 
-        # VADER NLP (daha doğru)
         if self.vader:
             scores = self.vader.polarity_scores(text)
             compound = scores["compound"]
         else:
-            # Fallback: Basit kelime sayma
             text_lower = text.lower()
             bullish_count = sum(
                 1 for w in SOCIAL_CONFIG["extreme_bullish"] if w in text_lower
@@ -254,23 +413,18 @@ class SocialSentimentAnalyzer:
         return {"compound": round(compound, 3), "label": label}
 
     # ============================================================
-    # 4. SOSYAL HACIM ANALİZİ (Pump/Dump Tespiti)
+    # 6. SOSYAL HACIM ANALİZİ (Pump/Dump Tespiti)
     # ============================================================
 
     def detect_social_volume_spike(self, posts: List[Dict]) -> Dict:
-        """
-        Sosyal medya hacminde ani artış tespiti.
-        Kısa sürede çok fazla post → pump veya dump habercisi olabilir.
-        """
+        """Sosyal medya hacminde ani artış tespiti."""
         if len(posts) < 3:
             return {"spike": False, "score": 0, "signal": "NEUTRAL"}
 
-        # Son 1 saat vs son 24 saat
         now = datetime.now().timestamp()
         recent_1h = sum(1 for p in posts if now - p.get("created", 0) < 3600)
         total = len(posts)
 
-        # Ortalama saatlik post (24 saat varsayarak)
         avg_hourly = total / 24
 
         spike = False
@@ -279,7 +433,6 @@ class SocialSentimentAnalyzer:
 
         if avg_hourly > 0 and recent_1h > avg_hourly * 3:
             spike = True
-            # Spike'ın yönünü analiz et
             recent_sentiments = []
             for p in posts:
                 if now - p.get("created", 0) < 3600:
@@ -304,22 +457,23 @@ class SocialSentimentAnalyzer:
         }
 
     # ============================================================
-    # 5. BİRLEŞTİRİLMİŞ SOSYAL SKOR
+    # 7. BİRLEŞTİRİLMİŞ SOSYAL SKOR (GELİŞTİRİLMİŞ)
     # ============================================================
 
     def get_social_score(self, symbol: str) -> Dict:
         """
-        Bir coin için tüm sosyal kaynakları birleştirerek skor üretir.
-        Bu fonksiyon news_analyzer.py tarafından çağrılır.
-        
+        Gelişmiş sosyal skor — tüm kaynaklar birleştirilmiş.
+
         Ağırlıklar:
-          Reddit sentiment: %50
-          Google Trends: %20
-          Sosyal hacim spike: %30
+          Reddit sentiment: %35
+          Google Trends: %15
+          CoinGecko Trending: %20
+          Whale Alert: %15
+          Sosyal hacim spike: %15
         """
         coin = symbol.replace("/USD", "").replace("USD", "")
 
-        # Reddit
+        # 1. Reddit
         posts = self.fetch_reddit_posts(coin)
         reddit_score = 0
         reddit_sentiments = []
@@ -329,30 +483,38 @@ class SocialSentimentAnalyzer:
             sent = self.analyze_text_sentiment(text)
             reddit_sentiments.append(sent["compound"])
 
-            # Upvote ağırlığı: çok beğenilen postlar daha etkili
-            weight = min(post.get("score", 1) / 100, 3)  # Max 3x ağırlık
+            weight = min(post.get("score", 1) / 100, 3)
             reddit_score += sent["compound"] * weight
 
         if reddit_sentiments:
             avg_reddit = sum(reddit_sentiments) / len(reddit_sentiments)
-            reddit_score = int(avg_reddit * 50)  # -50 ile +50 arası
+            reddit_score = int(avg_reddit * 50)
         else:
             reddit_score = 0
 
-        # Google Trends
+        # 2. Google Trends
         trends = self.get_google_trends_score(coin)
         trends_score = trends["score"]
 
-        # Sosyal hacim spike
+        # 3. CoinGecko Trending (YENİ)
+        cg_trending = self.is_coin_trending(coin)
+        trending_score = cg_trending["score"]
+
+        # 4. Whale Alert (YENİ)
+        whale = self.check_whale_activity(coin)
+        whale_score = whale["score"]
+
+        # 5. Sosyal hacim spike
         spike = self.detect_social_volume_spike(posts)
         spike_score = spike["score"]
 
         # Birleştirilmiş skor
-        # Reddit %50 + Trends %20 + Spike %30
         final_score = int(
-            reddit_score * 0.5 +
-            trends_score * 0.2 +
-            spike_score * 0.3
+            reddit_score * 0.35 +
+            trends_score * 0.15 +
+            trending_score * 0.20 +
+            whale_score * 0.15 +
+            spike_score * 0.15
         )
 
         # Sinyal
@@ -376,15 +538,19 @@ class SocialSentimentAnalyzer:
                 sum(reddit_sentiments) / max(len(reddit_sentiments), 1), 3
             ),
             "google_trending": trends.get("trending", False),
+            "coingecko_trending": cg_trending["trending"],
+            "whale_score": whale_score,
+            "whale_large_transfers": whale.get("large_transfers", 0),
             "social_spike": spike["spike"],
             "spike_posts_1h": spike.get("posts_1h", 0),
         }
 
-        if posts or trends.get("trending"):
+        if posts or trends.get("trending") or cg_trending["trending"]:
             logger.info(
                 f"  Sosyal {coin}: Reddit({len(posts)} post, "
                 f"skor:{reddit_score}) | "
-                f"Trend:{'EVET' if trends.get('trending') else 'hayir'} | "
+                f"CGTrend:{'EVET' if cg_trending['trending'] else 'hayir'} | "
+                f"Whale:{whale_score} | "
                 f"Spike:{'EVET' if spike['spike'] else 'hayir'} | "
                 f"Toplam:{final_score} -> {signal}"
             )
@@ -396,7 +562,6 @@ class SocialSentimentAnalyzer:
     # ============================================================
 
     def _is_cached(self, key: str) -> bool:
-        """Cache geçerliliğini kontrol et."""
         if key not in self.cache or key not in self.last_fetch:
             return False
         elapsed = (datetime.now() - self.last_fetch[key]).total_seconds()

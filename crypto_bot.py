@@ -45,6 +45,7 @@ from core.news_analyzer import NewsAnalyzer
 from core.pattern_detector import PatternDetector
 from core.macro_data import MacroDataAnalyzer
 from core.ml_predictor import MLPredictor
+from core.fundamental_analyzer import FundamentalAnalyzer
 
 # ============================================================
 # KONFİGÜRASYON — $500-1000 GERCEK HESAP + KRIZ STRATEJISI
@@ -245,6 +246,11 @@ class CryptoBot:
         # ML Tahmin modeli
         self.ml = MLPredictor()
 
+        # Fundamental analiz (YENİ)
+        self.fundamental = FundamentalAnalyzer()
+        self.fundamental_cache = {}
+        self.fundamental_last_check = {}
+
         # Loglama
         mode = "PAPER" if self.is_paper else "*** LIVE ***"
         logger.info("=" * 60)
@@ -254,6 +260,7 @@ class CryptoBot:
         logger.info(f"  Coinler: {', '.join(CRYPTO_CONFIG['symbols'])}")
         logger.info(f"  Stop-loss: {CRYPTO_CONFIG['stop_loss_pct']:.0%}")
         logger.info(f"  Take-profit: {CRYPTO_CONFIG['take_profit_pct']:.0%}")
+        logger.info(f"  Moduller: Teknik+Desen+Haber+Sosyal+Makro+ML+Fundamental")
         if not self.is_paper:
             logger.info(f"  Equity Floor: ${self.equity_floor:,.2f} (altina duserse DUR)")
         logger.info("=" * 60)
@@ -399,6 +406,96 @@ class CryptoBot:
         if momentum_up:
             buy_score += 5
             reasons.append("Mom+")
+
+        # === GELİŞMİŞ GÖSTERGELER (YENİ) ===
+        try:
+            # Ichimoku Cloud
+            from ta.trend import IchimokuIndicator
+            ichimoku = IchimokuIndicator(df["high"], df["low"], window1=9, window2=26, window3=52)
+            ich_a = ichimoku.ichimoku_a().iloc[-1]
+            ich_b = ichimoku.ichimoku_b().iloc[-1]
+            cloud_top = max(ich_a, ich_b) if pd.notna(ich_a) and pd.notna(ich_b) else 0
+            cloud_bottom = min(ich_a, ich_b) if pd.notna(ich_a) and pd.notna(ich_b) else 0
+
+            if cloud_top > 0:
+                if current_price > cloud_top:
+                    buy_score += 10
+                    reasons.append("Ichi+")
+                elif current_price < cloud_bottom:
+                    buy_score -= 10
+                    reasons.append("Ichi-")
+        except Exception:
+            pass
+
+        try:
+            # ADX (Trend Gücü)
+            from ta.trend import ADXIndicator
+            adx_ind = ADXIndicator(df["high"], df["low"], df["close"], window=14)
+            adx_val = adx_ind.adx().iloc[-1]
+            adx_pos = adx_ind.adx_pos().iloc[-1]
+            adx_neg = adx_ind.adx_neg().iloc[-1]
+
+            if pd.notna(adx_val) and adx_val > 25:
+                if adx_pos > adx_neg and trend == "UPTREND":
+                    buy_score += 10
+                    reasons.append(f"ADX:{adx_val:.0f}+")
+                elif adx_neg > adx_pos:
+                    buy_score -= 5
+        except Exception:
+            pass
+
+        try:
+            # OBV (On-Balance Volume) — hacim-fiyat uyumu
+            from ta.volume import OnBalanceVolumeIndicator
+            obv = OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume()
+            obv_sma = obv.rolling(10).mean()
+            obv_rising = obv.iloc[-1] > obv_sma.iloc[-1] if pd.notna(obv_sma.iloc[-1]) else False
+
+            if obv_rising and price_change_5 < 0:
+                buy_score += 15  # Bullish divergence: volume up, price down
+                reasons.append("OBV_div+")
+            elif not obv_rising and price_change_5 > 0:
+                buy_score -= 5  # Bearish divergence: volume down, price up
+        except Exception:
+            pass
+
+        try:
+            # Fibonacci — destek seviyesi yakınlığı
+            lookback = min(50, len(df))
+            fib_high = df["high"].tail(lookback).max()
+            fib_low = df["low"].tail(lookback).min()
+            fib_range = fib_high - fib_low
+            if fib_range > 0:
+                fib_618 = fib_high - fib_range * 0.618
+                fib_382 = fib_high - fib_range * 0.382
+                proximity_618 = abs(current_price - fib_618) / current_price
+                proximity_382 = abs(current_price - fib_382) / current_price
+                if proximity_618 < 0.015 and current_price <= fib_618:
+                    buy_score += 12
+                    reasons.append("Fib61.8")
+                elif proximity_382 < 0.015 and current_price <= fib_382:
+                    buy_score += 8
+                    reasons.append("Fib38.2")
+        except Exception:
+            pass
+
+        try:
+            # RSI Divergence
+            if len(df) >= 25 and "close" in df.columns:
+                rsi_series = RSIIndicator(df["close"], window=14).rsi()
+                price_vals = df["close"].tail(20).values
+                rsi_vals = rsi_series.tail(20).values
+                valid = ~(np.isnan(price_vals) | np.isnan(rsi_vals))
+                if valid.sum() >= 10:
+                    pv = price_vals[valid]
+                    rv = rsi_vals[valid]
+                    mid = len(pv) // 2
+                    if (pv[mid:].min() < pv[:mid].min() and
+                        rv[mid:].min() > rv[:mid].min()):
+                        buy_score += 15
+                        reasons.append("RSI_div+")
+        except Exception:
+            pass
 
         # === SELL SKORLAMA ===
         sell_score = 0
@@ -568,6 +665,42 @@ class CryptoBot:
         except Exception as e:
             logger.debug(f"ML tahmin hatasi {symbol}: {e}")
             tech["ml_score"] = 0
+
+        # === FUNDAMENTAL ANALİZ (YENİ) ===
+        try:
+            # Her coin icin 15 dakikada bir guncelle
+            fund_cache_key = symbol
+            last_check = self.fundamental_last_check.get(fund_cache_key)
+            if (last_check is None or
+                (datetime.now() - last_check).total_seconds() > 900):
+                fund_data = self.fundamental.get_fundamental_score(symbol)
+                self.fundamental_cache[fund_cache_key] = fund_data
+                self.fundamental_last_check[fund_cache_key] = datetime.now()
+            else:
+                fund_data = self.fundamental_cache.get(fund_cache_key, {})
+
+            fund_score = fund_data.get("fundamental_score", 0)
+
+            if fund_score != 0:
+                if tech["signal"] == "BUY" and fund_score > 0:
+                    tech["confidence"] = min(tech["confidence"] + fund_score, 100)
+                    tech["reasons"].append(f"Fund:+{fund_score}")
+                elif tech["signal"] == "BUY" and fund_score < -5:
+                    tech["confidence"] = max(tech["confidence"] + fund_score, 0)
+                    tech["reasons"].append(f"Fund:{fund_score}")
+                elif tech["signal"] == "HOLD" and fund_score >= 15:
+                    tech["signal"] = "BUY"
+                    tech["confidence"] = max(55, fund_score)
+                    tech["reasons"].append(f"FUND_BUY({fund_score})")
+
+            tech["fundamental_score"] = fund_score
+            tech["fundamental_signal"] = fund_data.get("fundamental_signal", "NEUTRAL")
+            tech["volume_spike"] = fund_data.get("volume_spike", False)
+
+        except Exception as e:
+            logger.debug(f"Fundamental analiz hatasi {symbol}: {e}")
+            tech["fundamental_score"] = 0
+            tech["fundamental_signal"] = "NEUTRAL"
 
         return tech
 
