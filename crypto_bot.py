@@ -130,6 +130,25 @@ CRYPTO_CONFIG = {
     "min_volume_ratio": 1.3,            # Volume 1.3x (biraz daha secici)
     "trend_ema_period": 50,
 
+    # === TREND FİLTRESİ (YENİ) ===
+    "ema200_trend_gate": True,          # EMA200 alti = BUY engelle
+
+    # === ZAMAN FİLTRESİ (YENİ) ===
+    "time_filter_enabled": True,        # Dusuk likidite saatlerinde alim yapma
+    "time_filter_start_utc": 0,         # 00:00 UTC
+    "time_filter_end_utc": 6,           # 06:00 UTC
+
+    # === KAYIP SERİSİ KORUYUCU (YENİ) ===
+    "loss_streak_enabled": True,
+    "loss_streak_warn": 3,              # 3 ardisik zarar → guven %70'e yukselt
+    "loss_streak_halt": 5,              # 5 ardisik zarar → 6 saat alim yasagi
+    "loss_streak_halt_hours": 6,
+    "loss_streak_elevated_conf": 70,
+
+    # === COIN FILTRELEME (YENİ) ===
+    "coin_filter_enabled": True,
+    "coin_max_consecutive_losses": 3,   # 3 ardisik zararda coin devre disi
+
     # === KOMISYON FARKINDALIGI ===
     "commission_pct": 0.0025,           # Alpaca %0.25
     "min_trade_value": 10.0,            # Min $10 islem (komisyon etkisi icin)
@@ -250,6 +269,11 @@ class CryptoBot:
         self.macro_cache = None
         self.macro_last_check = None
 
+        # Kayıp serisi ve coin filtresi takibi
+        self._consecutive_losses = 0
+        self._loss_halt_until = None
+        self._coin_consecutive_losses = {}  # {symbol: ardisik_zarar_sayisi}
+
         # ML Tahmin modeli
         self.ml = MLPredictor()
 
@@ -366,14 +390,26 @@ class CryptoBot:
         current_price = close.iloc[-1]
         reasons = []
 
-        # === TREND TESPİTİ (YENİ) ===
+        # === TREND TESPİTİ (GELİŞTİRİLMİŞ — EMA200 eklendi) ===
         ema_50 = EMAIndicator(close, window=min(50, len(close)-1)).ema_indicator().iloc[-1]
+        # EMA200: yeterli veri varsa hesapla, yoksa None
+        ema_200 = None
+        if len(close) >= 200:
+            ema_200 = EMAIndicator(close, window=200).ema_indicator().iloc[-1]
+        elif len(close) >= 100:
+            ema_200 = EMAIndicator(close, window=len(close)-1).ema_indicator().iloc[-1]
+
         if current_price > ema_50 and ema_9 > ema_21:
             trend = "UPTREND"
         elif current_price < ema_50 and ema_9 < ema_21:
             trend = "DOWNTREND"
         else:
             trend = "SIDEWAYS"
+
+        # EMA200 trend durumu
+        above_ema200 = True  # Default: filtre uygulanmaz
+        if ema_200 is not None:
+            above_ema200 = current_price > ema_200
 
         # === VOLUME ANALİZİ (YENİ) ===
         volume_ok = True
@@ -560,6 +596,8 @@ class CryptoBot:
             "rsi": rsi,
             "ema_9": ema_9,
             "ema_21": ema_21,
+            "ema_200": ema_200,
+            "above_ema200": above_ema200,
             "macd_hist": macd_hist,
             "atr": atr,
             "bb_lower": bb_lower,
@@ -982,6 +1020,20 @@ class CryptoBot:
                 "action": "SELL", "symbol": symbol,
                 "reason": reason, "time": datetime.now().isoformat(),
             })
+
+            # Kayıp/kazanç serisi takibi
+            if "STOP_LOSS" in reason:
+                self._consecutive_losses = getattr(self, '_consecutive_losses', 0) + 1
+                coin_losses = getattr(self, '_coin_consecutive_losses', {})
+                coin_losses[symbol] = coin_losses.get(symbol, 0) + 1
+                self._coin_consecutive_losses = coin_losses
+                logger.info(f"  Ardisik zarar: {self._consecutive_losses} | {symbol} zarar serisi: {coin_losses[symbol]}")
+            elif "TAKE_PROFIT" in reason or "TRAILING_STOP" in reason:
+                self._consecutive_losses = 0  # Kazanc → seriyi sifirla
+                coin_losses = getattr(self, '_coin_consecutive_losses', {})
+                coin_losses[symbol] = 0  # Bu coin'in serisini sifirla
+                self._coin_consecutive_losses = coin_losses
+
             self.consecutive_errors = 0
             return True
 
@@ -1202,12 +1254,68 @@ class CryptoBot:
                         if elapsed < req_wait:
                             continue
 
-                    # BUY sinyali (micro hesap korumasi dahil)
+                    # BUY sinyali (micro hesap korumasi + YENİ FİLTRELER)
+                    # --- EMA200 Trend Gate ---
+                    ema200_blocked = False
+                    if CRYPTO_CONFIG.get("ema200_trend_gate", True) and analysis["signal"] == "BUY":
+                        if not analysis.get("above_ema200", True):
+                            ema200_blocked = True
+                            logger.debug(f"  {symbol} EMA200 GATE: Fiyat EMA200 altinda, BUY engellendi")
+
+                    # --- Zaman Filtresi ---
+                    time_blocked = False
+                    if CRYPTO_CONFIG.get("time_filter_enabled", True) and analysis["signal"] == "BUY":
+                        from datetime import timezone
+                        utc_hour = datetime.now(timezone.utc).hour
+                        start_h = CRYPTO_CONFIG.get("time_filter_start_utc", 0)
+                        end_h = CRYPTO_CONFIG.get("time_filter_end_utc", 6)
+                        if start_h <= utc_hour < end_h:
+                            time_blocked = True
+                            logger.debug(f"  {symbol} ZAMAN GATE: UTC {utc_hour}:00 dusuk likidite, BUY engellendi")
+
+                    # --- Kayıp Serisi Koruyucu ---
+                    loss_streak_count = getattr(self, '_consecutive_losses', 0)
+                    loss_halted = False
+                    if CRYPTO_CONFIG.get("loss_streak_enabled", True) and analysis["signal"] == "BUY":
+                        # 5+ ardışık zarar → alım yasağı
+                        if loss_streak_count >= CRYPTO_CONFIG.get("loss_streak_halt", 5):
+                            halt_until = getattr(self, '_loss_halt_until', None)
+                            if halt_until is None or datetime.now() < halt_until:
+                                if halt_until is None:
+                                    halt_hours = CRYPTO_CONFIG.get("loss_streak_halt_hours", 6)
+                                    self._loss_halt_until = datetime.now() + timedelta(hours=halt_hours)
+                                    logger.warning(f"  ⚠️ {loss_streak_count} ardisik zarar! {halt_hours} saat alim yasagi")
+                                loss_halted = True
+                            else:
+                                # Yasak bitti, sıfırla
+                                self._consecutive_losses = 0
+                                self._loss_halt_until = None
+                                loss_streak_count = 0
+                        # 3+ ardışık zarar → güven eşiği yükselt
+                        elif loss_streak_count >= CRYPTO_CONFIG.get("loss_streak_warn", 3):
+                            elevated_conf = CRYPTO_CONFIG.get("loss_streak_elevated_conf", 70)
+                            if analysis["confidence"] < elevated_conf:
+                                loss_halted = True
+                                logger.info(f"  {symbol} KAYIP KORUYUCU: {loss_streak_count} ardisik zarar, guven {analysis['confidence']}% < {elevated_conf}% gerekli")
+
+                    # --- Coin Filtreleme ---
+                    coin_blocked = False
+                    if CRYPTO_CONFIG.get("coin_filter_enabled", True) and analysis["signal"] == "BUY":
+                        coin_losses = getattr(self, '_coin_consecutive_losses', {}).get(symbol, 0)
+                        max_coin_losses = CRYPTO_CONFIG.get("coin_max_consecutive_losses", 3)
+                        if coin_losses >= max_coin_losses:
+                            coin_blocked = True
+                            logger.info(f"  {symbol} COIN FILTRE: {coin_losses} ardisik zarar, bu coin devre disi")
+
                     if (
                         analysis["signal"] == "BUY"
                         and analysis["confidence"] >= min_confidence
                         and open_count < max_positions
                         and symbol not in [p.symbol.replace("USD", "/USD") for p in real_positions]
+                        and not ema200_blocked
+                        and not time_blocked
+                        and not loss_halted
+                        and not coin_blocked
                     ):
                         news_info = f" | Haber: {analysis.get('news_score', 0)}"
                         logger.info(

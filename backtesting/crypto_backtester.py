@@ -45,6 +45,13 @@ BACKTEST_CONFIG = {
     "min_trade_interval_bars": 20,      # 20 bar (kalite > miktar)
     "min_confidence": 55,
     "micro_account_threshold": 600,     # $600 altinda 1 pozisyon + min %55 guven
+
+    # === TREND FİLTRESİ ===
+    "ema200_trend_gate": True,
+
+    # === COIN FILTRELEME ===
+    "coin_filter_enabled": True,
+    "coin_max_consecutive_losses": 3,
 }
 
 # Test edilecek coinler (yfinance formatı)
@@ -119,12 +126,23 @@ class CryptoBacktester:
 
         # Trend
         ema_50 = EMAIndicator(close, window=min(50, len(close) - 1)).ema_indicator().iloc[-1]
+        # EMA200: yeterli veri varsa hesapla
+        ema_200 = None
+        if len(close) >= 200:
+            ema_200 = EMAIndicator(close, window=200).ema_indicator().iloc[-1]
+        elif len(close) >= 100:
+            ema_200 = EMAIndicator(close, window=len(close)-1).ema_indicator().iloc[-1]
+
         if current_price > ema_50 and ema_9 > ema_21:
             trend = "UPTREND"
         elif current_price < ema_50 and ema_9 < ema_21:
             trend = "DOWNTREND"
         else:
             trend = "SIDEWAYS"
+
+        above_ema200 = True
+        if ema_200 is not None:
+            above_ema200 = current_price > ema_200
 
         # Volume
         volume_ok = True
@@ -206,6 +224,7 @@ class CryptoBacktester:
             "atr": float(atr),
             "trend": trend,
             "volume_ratio": float(volume_ratio),
+            "above_ema200": above_ema200,
         }
 
     def _get_portfolio_value(self, current_prices: Dict[str, float]) -> float:
@@ -387,6 +406,16 @@ class CryptoBacktester:
                 total_signals += 1
 
                 if analysis["signal"] == "BUY" and analysis["confidence"] >= min_conf:
+                    # EMA200 Trend Gate
+                    if BACKTEST_CONFIG.get("ema200_trend_gate", True) and not analysis.get("above_ema200", True):
+                        continue
+
+                    # Coin filtreleme
+                    if BACKTEST_CONFIG.get("coin_filter_enabled", True):
+                        coin_losses = getattr(self, '_coin_consecutive_losses', {}).get(sym, 0)
+                        if coin_losses >= BACKTEST_CONFIG.get("coin_max_consecutive_losses", 3):
+                            continue
+
                     price = analysis["price"]
 
                     # Pozisyon boyutu
