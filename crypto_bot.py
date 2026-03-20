@@ -149,6 +149,19 @@ CRYPTO_CONFIG = {
     "coin_filter_enabled": True,
     "coin_max_consecutive_losses": 3,   # 3 ardisik zararda coin devre disi
 
+    # === R:R GATE (Risk/Ödül Oranı) ===
+    "rr_gate_enabled": True,
+    "min_rr_ratio": 2.0,                # Min 2:1 risk/ödül oranı
+
+    # === MULTI-TIMEFRAME ONAY ===
+    "multi_tf_enabled": True,
+    "multi_tf_4h_required": True,       # 4h trend onayı gerekli
+
+    # === BREAK-EVEN STOP ===
+    "breakeven_enabled": True,
+    "breakeven_trigger_pct": 0.015,     # %1.5 karda break-even aktif
+    "breakeven_offset_pct": 0.001,      # Giris fiyatinin %0.1 ustune koy (komisyon)
+
     # === KOMISYON FARKINDALIGI ===
     "commission_pct": 0.0025,           # Alpaca %0.25
     "min_trade_value": 10.0,            # Min $10 islem (komisyon etkisi icin)
@@ -326,12 +339,13 @@ class CryptoBot:
     # VERİ ÇEKME
     # ============================================================
 
-    def get_crypto_bars(self, symbol: str, days: int = 30) -> pd.DataFrame:
+    def get_crypto_bars(self, symbol: str, days: int = 30, timeframe=None) -> pd.DataFrame:
         """Alpaca'dan kripto bar verisi çeker."""
         try:
+            tf = timeframe if timeframe else TimeFrame.Hour
             request = CryptoBarsRequest(
                 symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Hour,
+                timeframe=tf,
                 start=datetime.now() - timedelta(days=days),
             )
             bars = self.crypto_data.get_crypto_bars(request)
@@ -1089,10 +1103,30 @@ class CryptoBot:
             # Trailing stop: en yüksek fiyattan %1.5 düşerse sat
             trailing_drop = (highest - current_price) / highest if highest > 0 else 0
 
+            # === BREAK-EVEN STOP (YENİ) ===
+            if CRYPTO_CONFIG.get("breakeven_enabled", True):
+                be_trigger = CRYPTO_CONFIG.get("breakeven_trigger_pct", 0.015)
+                be_offset = CRYPTO_CONFIG.get("breakeven_offset_pct", 0.001)
+                if pnl_pct >= be_trigger and not pos_data.get("breakeven_set", False):
+                    # Stop-loss'u giriş fiyatı + offset'e çek
+                    breakeven_price = entry_price * (1 + be_offset)
+                    if symbol in self.positions:
+                        self.positions[symbol]["stop_loss_pct"] = be_offset  # Artık sadece %0.1 risk
+                        self.positions[symbol]["breakeven_set"] = True
+                    logger.info(
+                        f"  🔒 BREAK-EVEN {symbol}: +{pnl_pct:.1%} → SL giris fiyatina cekildi (${breakeven_price:.4f})"
+                    )
+                    # pos_sl_pct'yi güncelle (bu döngüde de geçerli olsun)
+                    pos_sl_pct_override = be_offset
+                else:
+                    pos_sl_pct_override = None
+            else:
+                pos_sl_pct_override = None
+
             # === SATIŞ KARARLARI (ÖNCELİK SIRASINA GÖRE) ===
 
             # 1. KESİN STOP-LOSS (ATR adaptif — pozisyona ozel)
-            pos_sl_pct = pos_data.get("stop_loss_pct", CRYPTO_CONFIG["stop_loss_pct"])
+            pos_sl_pct = pos_sl_pct_override if pos_sl_pct_override is not None else pos_data.get("stop_loss_pct", CRYPTO_CONFIG["stop_loss_pct"])
             if pnl_pct <= -pos_sl_pct:
                 logger.info(
                     f"  STOP LOSS {symbol}: {pnl_pct:.1%} (limit: -{pos_sl_pct:.1%}) (${pnl_usd:+.2f})"
@@ -1307,6 +1341,47 @@ class CryptoBot:
                             coin_blocked = True
                             logger.info(f"  {symbol} COIN FILTRE: {coin_losses} ardisik zarar, bu coin devre disi")
 
+                    # --- R:R Gate (Risk/Ödül Oranı) ---
+                    rr_blocked = False
+                    if CRYPTO_CONFIG.get("rr_gate_enabled", True) and analysis["signal"] == "BUY":
+                        sl_pct = analysis.get("atr", 0)
+                        price = analysis.get("price", 0)
+                        tp_pct = CRYPTO_CONFIG.get("take_profit_pct", 0.04)
+                        if sl_pct > 0 and price > 0:
+                            # Adaptif SL ile aynı hesaplama
+                            atr_pct = sl_pct / price
+                            actual_sl = atr_pct * CRYPTO_CONFIG.get("atr_stop_multiplier", 1.5)
+                            actual_sl = max(actual_sl, CRYPTO_CONFIG.get("stop_loss_pct", 0.015))
+                            actual_sl = min(actual_sl, CRYPTO_CONFIG.get("stop_loss_max_pct", 0.04))
+                            rr_ratio = tp_pct / actual_sl if actual_sl > 0 else 0
+                            min_rr = CRYPTO_CONFIG.get("min_rr_ratio", 2.0)
+                            if rr_ratio < min_rr:
+                                rr_blocked = True
+                                logger.debug(f"  {symbol} R:R GATE: {rr_ratio:.1f}:1 < {min_rr}:1, BUY engellendi")
+
+                    # --- Multi-Timeframe Onay ---
+                    mtf_blocked = False
+                    if CRYPTO_CONFIG.get("multi_tf_enabled", True) and analysis["signal"] == "BUY":
+                        try:
+                            # 4 saatlik veriyi Alpaca'dan çek (resampling)
+                            df_1h = self.get_crypto_bars(symbol, days=14)
+                            if not df_1h.empty and len(df_1h) >= 50:
+                                # 4h bar oluştur: 1h veriyi resample et
+                                df_4h = df_1h.resample('4h').agg({
+                                    'open': 'first', 'high': 'max',
+                                    'low': 'min', 'close': 'last',
+                                    'volume': 'sum'
+                                }).dropna()
+                                if len(df_4h) >= 20:
+                                    from ta.trend import EMAIndicator as EMA4h
+                                    ema9_4h = EMA4h(df_4h['close'], window=9).ema_indicator().iloc[-1]
+                                    ema21_4h = EMA4h(df_4h['close'], window=21).ema_indicator().iloc[-1]
+                                    if ema9_4h < ema21_4h:  # 4h downtrend
+                                        mtf_blocked = True
+                                        logger.debug(f"  {symbol} MTF GATE: 4h trend dususte (EMA9 < EMA21), BUY engellendi")
+                        except Exception:
+                            pass  # Veri alinamazsa filtre uygulanmaz
+
                     if (
                         analysis["signal"] == "BUY"
                         and analysis["confidence"] >= min_confidence
@@ -1316,6 +1391,8 @@ class CryptoBot:
                         and not time_blocked
                         and not loss_halted
                         and not coin_blocked
+                        and not rr_blocked
+                        and not mtf_blocked
                     ):
                         news_info = f" | Haber: {analysis.get('news_score', 0)}"
                         logger.info(

@@ -52,6 +52,15 @@ BACKTEST_CONFIG = {
     # === COIN FILTRELEME ===
     "coin_filter_enabled": True,
     "coin_max_consecutive_losses": 3,
+
+    # === R:R GATE ===
+    "rr_gate_enabled": True,
+    "min_rr_ratio": 2.0,
+
+    # === BREAK-EVEN STOP ===
+    "breakeven_enabled": True,
+    "breakeven_trigger_pct": 0.015,
+    "breakeven_offset_pct": 0.001,
 }
 
 # Test edilecek coinler (yfinance formatı)
@@ -317,6 +326,14 @@ class CryptoBacktester:
                 highest = pos.get("highest_price", entry)
                 trailing_drop = (highest - price) / highest if highest > 0 else 0
 
+                # Break-Even Stop
+                if BACKTEST_CONFIG.get("breakeven_enabled", True):
+                    be_trigger = BACKTEST_CONFIG.get("breakeven_trigger_pct", 0.015)
+                    be_offset = BACKTEST_CONFIG.get("breakeven_offset_pct", 0.001)
+                    if pnl_pct >= be_trigger and not pos.get("breakeven_set", False):
+                        pos["stop_loss_pct"] = be_offset
+                        pos["breakeven_set"] = True
+
                 # Stop-loss (ATR adaptif)
                 pos_sl = pos.get("stop_loss_pct", BACKTEST_CONFIG["stop_loss_pct"])
                 if pnl_pct <= -pos_sl:
@@ -415,6 +432,35 @@ class CryptoBacktester:
                         coin_losses = getattr(self, '_coin_consecutive_losses', {}).get(sym, 0)
                         if coin_losses >= BACKTEST_CONFIG.get("coin_max_consecutive_losses", 3):
                             continue
+
+                    # R:R Gate
+                    if BACKTEST_CONFIG.get("rr_gate_enabled", True):
+                        atr_val = analysis.get("atr", 0)
+                        a_price = analysis.get("price", 0)
+                        if atr_val > 0 and a_price > 0:
+                            atr_pct = atr_val / a_price
+                            actual_sl = atr_pct * BACKTEST_CONFIG.get('atr_stop_multiplier', 1.5)
+                            actual_sl = max(actual_sl, BACKTEST_CONFIG.get('stop_loss_pct', 0.015))
+                            actual_sl = min(actual_sl, BACKTEST_CONFIG.get('stop_loss_max_pct', 0.04))
+                            rr_ratio = BACKTEST_CONFIG.get('take_profit_pct', 0.04) / actual_sl if actual_sl > 0 else 0
+                            if rr_ratio < BACKTEST_CONFIG.get('min_rr_ratio', 2.0):
+                                continue
+
+                    # Multi-Timeframe: backtesterde 4h resample
+                    if available is not None and len(available) >= 80:
+                        try:
+                            df_4h = available.resample('4h').agg({
+                                'open': 'first', 'high': 'max',
+                                'low': 'min', 'close': 'last',
+                                'volume': 'sum'
+                            }).dropna()
+                            if len(df_4h) >= 20:
+                                ema9_4h = EMAIndicator(df_4h['close'], window=9).ema_indicator().iloc[-1]
+                                ema21_4h = EMAIndicator(df_4h['close'], window=21).ema_indicator().iloc[-1]
+                                if ema9_4h < ema21_4h:
+                                    continue  # 4h downtrend
+                        except Exception:
+                            pass
 
                     price = analysis["price"]
 
