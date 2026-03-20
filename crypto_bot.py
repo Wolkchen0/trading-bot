@@ -79,29 +79,24 @@ CRYPTO_CONFIG = {
     # Hedef: Gunluk $3-10 net kazanc ($500 hesap = %0.6-2/gun)
     # ============================================================
 
-    # Coin secimi: AZALTILDI — sadece iyi performans gosteren coinler
-    # Backtest sonucu: AVAX ve XRP karli, BTC ve DOT zararli
+    # Coin secimi: OPTIMIZED — sadece kârli coinler (ADA/DOT/AVAX/LTC çıkarıldı)
+    # Backtest Q1 2026: ADA -$16, DOT -$18, AVAX -$5, LTC -$5 → toplam -$44 zarar
     "symbols": [
-        # TIER 1 — Backtest'te karli + yuksek likidite
-        "SOL/USD", "XRP/USD", "AVAX/USD",
-        # TIER 2 — Iyi volatilite, likidite yeterli
-        "DOGE/USD", "LINK/USD", "ETH/USD",
-        # TIER 3 — Yuksek volatilite (firsatci)
+        # TIER 1 — En iyi performans
+        "BTC/USD", "SOL/USD", "ETH/USD",
+        # TIER 2 — İyi likidite + volatilite
+        "XRP/USD", "LINK/USD", "DOGE/USD",
+        # TIER 3 — Yüksek volatilite (fırsatçı)
         "PEPE/USD", "SHIB/USD",
-        # TIER 4 — Dusuk oncelik (buyuk hesaplar icin)
-        "BTC/USD", "ADA/USD", "DOT/USD", "LTC/USD",
     ],
 
-    # Pozisyon agirliklari ($500 hesaba gore — komisyon etkisi dusunuldu)
-    # Buyuk agirlik = daha cok yatirim → komisyon orani azalir
+    # Pozisyon ağırlıkları — daraltılmış havuz, daha büyük ağırlıklar
     "tier_weights": {
-        "SOL/USD": 0.45, "XRP/USD": 0.40, "AVAX/USD": 0.40,  # Karli coinler
-        "DOGE/USD": 0.35, "LINK/USD": 0.35, "ETH/USD": 0.30,
+        "BTC/USD": 0.45, "SOL/USD": 0.45, "ETH/USD": 0.40,
+        "XRP/USD": 0.40, "LINK/USD": 0.40, "DOGE/USD": 0.35,
         "PEPE/USD": 0.25, "SHIB/USD": 0.25,
-        "BTC/USD": 0.15,  # Backtest: BTC kucuk hesapta zarari buyuk
-        "ADA/USD": 0.20, "DOT/USD": 0.20, "LTC/USD": 0.20,
     },
-    "default_tier_weight": 0.20,
+    "default_tier_weight": 0.25,
 
     # === RISK YONETIMI ($500-1000 GERCEK HESAP) ===
     "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
@@ -1231,11 +1226,11 @@ class CryptoBot:
 
                 # === F&G BAZLI DİNAMİK GÜVEN EŞİĞİ ===
                 max_positions = CRYPTO_CONFIG["max_open_positions"]
-                min_confidence = 55  # Baz esik: sadece guclu sinyallere gir
+                min_confidence = 60  # Baz esik: kaliteli sinyallere gir (%60+)
                 fg_value = self._last_fg_value
 
                 if fg_value < 20:  # Extreme Fear → çok temkinli
-                    min_confidence = 65
+                    min_confidence = 70
                     max_positions = 1
                     if self.cycle_count % 20 == 1:
                         logger.warning(
@@ -1243,7 +1238,7 @@ class CryptoBot:
                             f"Min %{min_confidence} guven, max {max_positions} poz"
                         )
                 elif fg_value < 40:  # Fear → temkinli
-                    min_confidence = 55
+                    min_confidence = 60
                     max_positions = 1
                     if self.cycle_count % 20 == 1:
                         logger.warning(
@@ -1252,7 +1247,7 @@ class CryptoBot:
                         )
                 elif self.equity < CRYPTO_CONFIG.get("micro_account_threshold", 600):
                     max_positions = 1
-                    min_confidence = 45
+                    min_confidence = 55
                     if self.cycle_count == 1:
                         logger.warning(
                             f"  MICRO HESAP MODU: ${self.equity:.0f} < "

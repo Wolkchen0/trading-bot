@@ -43,7 +43,7 @@ BACKTEST_CONFIG = {
     "max_open_positions": 2,
     "cash_reserve_pct": 0.10,
     "min_trade_interval_bars": 20,      # 20 bar (kalite > miktar)
-    "min_confidence": 55,
+    "min_confidence": 60,
     "micro_account_threshold": 600,     # $600 altinda 1 pozisyon + min %55 guven
 
     # === TREND FİLTRESİ ===
@@ -63,18 +63,14 @@ BACKTEST_CONFIG = {
     "breakeven_offset_pct": 0.001,
 }
 
-# Test edilecek coinler (yfinance formatı)
+# Test edilecek coinler (yfinance formatı) — ADA/DOT/AVAX/LTC çıkarıldı
 CRYPTO_SYMBOLS = {
     "BTC-USD": "BTC/USD",
     "ETH-USD": "ETH/USD",
     "SOL-USD": "SOL/USD",
     "XRP-USD": "XRP/USD",
     "DOGE-USD": "DOGE/USD",
-    "AVAX-USD": "AVAX/USD",
     "LINK-USD": "LINK/USD",
-    "ADA-USD": "ADA/USD",
-    "DOT-USD": "DOT/USD",
-    "LTC-USD": "LTC/USD",
 }
 
 
