@@ -116,7 +116,9 @@ CRYPTO_CONFIG = {
     # === SCALP HEDEFLERI (KUCUK HESAP OPTIMIZE) ===
     # Komisyon gidis-donus: %0.5 → kari en az %1.0 olmali
     # Risk/Odul: 1:2.3 (iyi oran)
-    "stop_loss_pct": 0.015,             # %1.5 stop (max kayip $500*45%*1.5% = $3.4)
+    "stop_loss_pct": 0.015,             # %1.5 MINIMUM stop (ATR adaptif alt sinir)
+    "stop_loss_max_pct": 0.04,           # %4 MAKSIMUM stop (ATR adaptif ust sinir)
+    "atr_stop_multiplier": 1.5,          # ATR carpani: stop = 1.5 * ATR%
     "take_profit_pct": 0.035,           # %3.5 take-profit ($225 poz = $7.9 kazanc)
     "trailing_stop_pct": 0.012,         # %1.2 trailing stop
     "partial_profit_pct": 0.020,        # %2.0'de yarisini sat
@@ -886,8 +888,18 @@ class CryptoBot:
                 f"| {', '.join(analysis['reasons'])}"
             )
 
+            # ADAPTIF STOP-LOSS: ATR bazli dinamik hesaplama
+            atr_value = analysis.get("atr", 0)
+            if atr_value > 0 and price > 0:
+                atr_pct = atr_value / price  # ATR% (fiyata gore)
+                adaptive_sl = atr_pct * CRYPTO_CONFIG['atr_stop_multiplier']  # 1.5 × ATR%
+                adaptive_sl = max(adaptive_sl, CRYPTO_CONFIG['stop_loss_pct'])  # Min %1.5
+                adaptive_sl = min(adaptive_sl, CRYPTO_CONFIG['stop_loss_max_pct'])  # Max %4
+            else:
+                adaptive_sl = CRYPTO_CONFIG['stop_loss_pct']  # Fallback: sabit %1.5
+
             # SUNUCU TARAFLI STOP-LOSS (bot offline olsa bile calısır!)
-            stop_price = round(price * (1 - CRYPTO_CONFIG['stop_loss_pct']), 6)
+            stop_price = round(price * (1 - adaptive_sl), 6)
             try:
                 limit_price = round(stop_price * 0.995, 6)  # %0.5 slippage payi
                 sl_request = StopLimitOrderRequest(
@@ -900,8 +912,9 @@ class CryptoBot:
                 )
                 sl_order = self.client.submit_order(sl_request)
                 logger.info(
-                    f"  STOP-LOSS yerlestirildi: {symbol} @ ${stop_price:,.4f} "
-                    f"(sunucu tarafli, bot kapansa bile calisir)"
+                    f"  ADAPTIF STOP-LOSS: {symbol} @ ${stop_price:,.4f} "
+                    f"({adaptive_sl:.1%} | ATR={atr_value:.4f}) "
+                    f"(sunucu tarafli)"
                 )
             except Exception as sl_err:
                 logger.warning(f"  Stop-loss emri gonderilemedi: {sl_err}")
@@ -913,6 +926,7 @@ class CryptoBot:
                 "entry_time": datetime.now().isoformat(),
                 "order_id": str(order.id),
                 "stop_loss_price": stop_price,
+                "stop_loss_pct": adaptive_sl,  # Pozisyona ozel adaptif SL
             }
             self.last_trade_time[symbol] = datetime.now()
             self.trades_today.append({
@@ -1025,12 +1039,13 @@ class CryptoBot:
 
             # === SATIŞ KARARLARI (ÖNCELİK SIRASINA GÖRE) ===
 
-            # 1. KESİN STOP-LOSS (%2.5 zarar)
-            if pnl_pct <= -CRYPTO_CONFIG["stop_loss_pct"]:
+            # 1. KESİN STOP-LOSS (ATR adaptif — pozisyona ozel)
+            pos_sl_pct = pos_data.get("stop_loss_pct", CRYPTO_CONFIG["stop_loss_pct"])
+            if pnl_pct <= -pos_sl_pct:
                 logger.info(
-                    f"  STOP LOSS {symbol}: {pnl_pct:.1%} (${pnl_usd:+.2f})"
+                    f"  STOP LOSS {symbol}: {pnl_pct:.1%} (limit: -{pos_sl_pct:.1%}) (${pnl_usd:+.2f})"
                 )
-                self.execute_sell(symbol, f"STOP_LOSS ({pnl_pct:.1%})")
+                self.execute_sell(symbol, f"STOP_LOSS ({pnl_pct:.1%} / limit -{pos_sl_pct:.1%})")
 
             # 2. TAKE PROFIT (%4 kâr)
             elif pnl_pct >= CRYPTO_CONFIG["take_profit_pct"]:

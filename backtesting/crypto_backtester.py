@@ -28,7 +28,9 @@ from utils.logger import logger
 
 # crypto_bot.py'den aynı config
 BACKTEST_CONFIG = {
-    "stop_loss_pct": 0.015,             # %1.5
+    "stop_loss_pct": 0.015,             # %1.5 MINIMUM (ATR adaptif alt sinir)
+    "stop_loss_max_pct": 0.04,           # %4 MAKSIMUM (ATR adaptif ust sinir)
+    "atr_stop_multiplier": 1.5,          # ATR carpani: stop = 1.5 * ATR%
     "take_profit_pct": 0.035,           # %3.5 (komisyon etkisini karsilamak icin yukseltildi)
     "trailing_stop_pct": 0.012,         # %1.2
     "partial_profit_pct": 0.020,        # %2.0
@@ -41,7 +43,7 @@ BACKTEST_CONFIG = {
     "max_open_positions": 2,
     "cash_reserve_pct": 0.10,
     "min_trade_interval_bars": 20,      # 20 bar (kalite > miktar)
-    "min_confidence": 50,
+    "min_confidence": 55,
     "micro_account_threshold": 600,     # $600 altinda 1 pozisyon + min %55 guven
 }
 
@@ -296,8 +298,9 @@ class CryptoBacktester:
                 highest = pos.get("highest_price", entry)
                 trailing_drop = (highest - price) / highest if highest > 0 else 0
 
-                # Stop-loss
-                if pnl_pct <= -BACKTEST_CONFIG["stop_loss_pct"]:
+                # Stop-loss (ATR adaptif)
+                pos_sl = pos.get("stop_loss_pct", BACKTEST_CONFIG["stop_loss_pct"])
+                if pnl_pct <= -pos_sl:
                     symbols_to_close.append((sym, "STOP_LOSS", price, pnl_pct))
                 # Take-profit
                 elif pnl_pct >= BACKTEST_CONFIG["take_profit_pct"]:
@@ -408,12 +411,23 @@ class CryptoBacktester:
                     self.total_fees += fee
                     total_buys += 1
 
+                    # ATR adaptif stop-loss hesapla
+                    atr_value = analysis.get("atr", 0)
+                    if atr_value > 0 and price > 0:
+                        atr_pct = atr_value / price
+                        adaptive_sl = atr_pct * BACKTEST_CONFIG['atr_stop_multiplier']
+                        adaptive_sl = max(adaptive_sl, BACKTEST_CONFIG['stop_loss_pct'])
+                        adaptive_sl = min(adaptive_sl, BACKTEST_CONFIG['stop_loss_max_pct'])
+                    else:
+                        adaptive_sl = BACKTEST_CONFIG['stop_loss_pct']
+
                     self.positions[sym] = {
                         "entry_price": price,
                         "qty": qty,
                         "highest_price": price,
                         "partial_sold": False,
                         "entry_time": str(current_time),
+                        "stop_loss_pct": adaptive_sl,
                     }
                     self.last_trade_bar[sym] = bar_idx
 
