@@ -61,6 +61,15 @@ BACKTEST_CONFIG = {
     "breakeven_enabled": True,
     "breakeven_trigger_pct": 0.015,
     "breakeven_offset_pct": 0.001,
+
+    # === VOLATILITE FILTRESI ===
+    "volatility_filter_enabled": True,
+    "max_atr_pct": 0.06,
+
+    # === SUPPORT/RESISTANCE ===
+    "sr_enabled": True,
+    "sr_lookback_bars": 50,
+    "sr_proximity_pct": 0.015,
 }
 
 # Test edilecek coinler (yfinance formatı) — ADA/DOT/AVAX/LTC çıkarıldı
@@ -192,6 +201,28 @@ class CryptoBacktester:
         if momentum_up:
             buy_score += 5
             reasons.append("Mom+")
+
+        # Support/Resistance
+        try:
+            if BACKTEST_CONFIG.get("sr_enabled", True):
+                sr_lb = min(BACKTEST_CONFIG.get("sr_lookback_bars", 50), len(df))
+                sr_prox = BACKTEST_CONFIG.get("sr_proximity_pct", 0.015)
+                recent_sr = df.tail(sr_lb)
+                sw_low = recent_sr["low"].min()
+                sw_high = recent_sr["high"].max()
+                if sw_low > 0:
+                    dist_sup = (current_price - sw_low) / current_price
+                    if dist_sup < sr_prox:
+                        buy_score += 15
+                        reasons.append("SR_support")
+                if sw_high > 0:
+                    dist_res = (sw_high - current_price) / current_price
+                    if dist_res < sr_prox:
+                        buy_score -= 10
+                        sell_score += 10
+                        reasons.append("SR_resist")
+        except Exception:
+            pass
 
         # SELL skoru
         sell_score = 0
@@ -457,6 +488,15 @@ class CryptoBacktester:
                                     continue  # 4h downtrend
                         except Exception:
                             pass
+
+                    # Volatilite filtresi
+                    if BACKTEST_CONFIG.get("volatility_filter_enabled", True):
+                        atr_val = analysis.get("atr", 0)
+                        a_price = analysis.get("price", 1)
+                        if atr_val > 0 and a_price > 0:
+                            atr_pct = atr_val / a_price
+                            if atr_pct > BACKTEST_CONFIG.get("max_atr_pct", 0.06):
+                                continue
 
                     price = analysis["price"]
 

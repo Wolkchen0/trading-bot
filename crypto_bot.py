@@ -157,6 +157,15 @@ CRYPTO_CONFIG = {
     "breakeven_trigger_pct": 0.015,     # %1.5 karda break-even aktif
     "breakeven_offset_pct": 0.001,      # Giris fiyatinin %0.1 ustune koy (komisyon)
 
+    # === VOLATİLİTE FİLTRESİ ===
+    "volatility_filter_enabled": True,
+    "max_atr_pct": 0.06,                # ATR > %6 ise alım yapma (flash crash riski)
+
+    # === SUPPORT/RESISTANCE ===
+    "sr_enabled": True,
+    "sr_lookback_bars": 50,             # S/R için son 50 bar
+    "sr_proximity_pct": 0.015,          # Fiyat S/R'ye %1.5 yakınsa aksiyon al
+
     # === KOMISYON FARKINDALIGI ===
     "commission_pct": 0.0025,           # Alpaca %0.25
     "min_trade_value": 10.0,            # Min $10 islem (komisyon etkisi icin)
@@ -562,6 +571,33 @@ class CryptoBot:
                         rv[mid:].min() > rv[:mid].min()):
                         buy_score += 15
                         reasons.append("RSI_div+")
+        except Exception:
+            pass
+
+        # === SUPPORT / RESISTANCE SEVİYELERİ ===
+        try:
+            if CRYPTO_CONFIG.get("sr_enabled", True):
+                sr_lookback = CRYPTO_CONFIG.get("sr_lookback_bars", 50)
+                sr_prox = CRYPTO_CONFIG.get("sr_proximity_pct", 0.015)
+                lb = min(sr_lookback, len(df))
+                recent = df.tail(lb)
+                swing_low = recent["low"].min()
+                swing_high = recent["high"].max()
+                
+                # Fiyat destek seviyesine yakınsa → güçlü BUY
+                if swing_low > 0:
+                    dist_to_support = (current_price - swing_low) / current_price
+                    if dist_to_support < sr_prox:
+                        buy_score += 15
+                        reasons.append("SR_support")
+                
+                # Fiyat direnç seviyesine yakınsa → zayıf BUY, güçlü SELL
+                if swing_high > 0:
+                    dist_to_resist = (swing_high - current_price) / current_price
+                    if dist_to_resist < sr_prox:
+                        buy_score -= 10
+                        sell_score += 10
+                        reasons.append("SR_resist")
         except Exception:
             pass
 
@@ -1377,6 +1413,18 @@ class CryptoBot:
                         except Exception:
                             pass  # Veri alinamazsa filtre uygulanmaz
 
+                    # --- Volatilite Filtresi ---
+                    vol_blocked = False
+                    if CRYPTO_CONFIG.get("volatility_filter_enabled", True) and analysis["signal"] == "BUY":
+                        atr_val = analysis.get("atr", 0)
+                        cur_price = analysis.get("price", 1)
+                        if atr_val > 0 and cur_price > 0:
+                            atr_pct = atr_val / cur_price
+                            max_atr = CRYPTO_CONFIG.get("max_atr_pct", 0.06)
+                            if atr_pct > max_atr:
+                                vol_blocked = True
+                                logger.debug(f"  {symbol} VOL GATE: ATR={atr_pct:.1%} > {max_atr:.0%}, cok volatil BUY engellendi")
+
                     if (
                         analysis["signal"] == "BUY"
                         and analysis["confidence"] >= min_confidence
@@ -1388,6 +1436,7 @@ class CryptoBot:
                         and not coin_blocked
                         and not rr_blocked
                         and not mtf_blocked
+                        and not vol_blocked
                     ):
                         news_info = f" | Haber: {analysis.get('news_score', 0)}"
                         logger.info(
