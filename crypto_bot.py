@@ -107,7 +107,7 @@ CRYPTO_CONFIG = {
     "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
     "max_position_pct": 0.45,           # Tek pozisyon max %45 ($500 = $225)
     "max_position_usd": 300,            # MUTLAK LIMIT: paper'da max $300
-    "live_max_position_usd": 200,       # LIVE LIMIT: gercek parada max $200 (komisyon etkisini azalt)
+    "live_max_position_usd": 300,       # LIVE LIMIT: gercek parada max $300 (komisyon etkisini minimize et)
     "max_open_positions": 2,            # Max 2 pozisyon ($500'de yogunlastir)
     "cash_reserve_pct": 0.10,           # %10 nakit rezerv ($500 = $50 yedek)
     "micro_account_threshold": 600,     # $600 altinda ekstra koruma
