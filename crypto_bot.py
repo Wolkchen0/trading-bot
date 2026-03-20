@@ -1262,7 +1262,7 @@ class CryptoBot:
 
                 # === F&G BAZLI DİNAMİK GÜVEN EŞİĞİ ===
                 max_positions = CRYPTO_CONFIG["max_open_positions"]
-                min_confidence = 60  # Baz esik: kaliteli sinyallere gir (%60+)
+                min_confidence = 55  # Baz esik: normal modda %55
                 fg_value = self._last_fg_value
 
                 if fg_value < 20:  # Extreme Fear → çok temkinli
