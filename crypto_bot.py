@@ -32,7 +32,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    MarketOrderRequest, LimitOrderRequest, StopOrderRequest,
+    MarketOrderRequest, LimitOrderRequest, StopLimitOrderRequest,
     GetOrdersRequest,
 )
 from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
@@ -107,7 +107,7 @@ CRYPTO_CONFIG = {
     "max_risk_per_trade_pct": 0.02,     # %2 risk per trade ($500 = max $10 kayip)
     "max_position_pct": 0.45,           # Tek pozisyon max %45 ($500 = $225)
     "max_position_usd": 300,            # MUTLAK LIMIT: paper'da max $300
-    "live_max_position_usd": 150,       # LIVE LIMIT: gercek parada max $150 (guvenlika)
+    "live_max_position_usd": 200,       # LIVE LIMIT: gercek parada max $200 (komisyon etkisini azalt)
     "max_open_positions": 2,            # Max 2 pozisyon ($500'de yogunlastir)
     "cash_reserve_pct": 0.10,           # %10 nakit rezerv ($500 = $50 yedek)
     "micro_account_threshold": 600,     # $600 altinda ekstra koruma
@@ -235,6 +235,7 @@ class CryptoBot:
         self.positions = {}
         self.sell_cooldown = {}  # BUG FIX: satis dongusu onleme
         self.cycle_count = 0
+        self._last_fg_value = 50  # Fear & Greed cache (varsayilan: notr)
 
         # Haber analiz modülü
         self.news = NewsAnalyzer()
@@ -633,6 +634,11 @@ class CryptoBot:
             tech["fear_greed"] = news_data["fear_greed"]
             tech["news_count"] = news_data["relevant_news_count"]
 
+            # F&G degerini cache'le (ana dongu icin)
+            fg = news_data.get("fear_greed", {})
+            if isinstance(fg, dict) and "value" in fg:
+                self._last_fg_value = fg["value"]
+
         except Exception as e:
             logger.debug(f"Haber analizi hatasi {symbol}: {e}")
             tech["news_score"] = 0
@@ -883,12 +889,14 @@ class CryptoBot:
             # SUNUCU TARAFLI STOP-LOSS (bot offline olsa bile calısır!)
             stop_price = round(price * (1 - CRYPTO_CONFIG['stop_loss_pct']), 6)
             try:
-                sl_request = StopOrderRequest(
+                limit_price = round(stop_price * 0.995, 6)  # %0.5 slippage payi
+                sl_request = StopLimitOrderRequest(
                     symbol=symbol,
                     qty=qty,
                     side=OrderSide.SELL,
                     time_in_force=TimeInForce.GTC,
                     stop_price=stop_price,
+                    limit_price=limit_price,
                 )
                 sl_order = self.client.submit_order(sl_request)
                 logger.info(
@@ -1120,12 +1128,30 @@ class CryptoBot:
                                   if float(p.qty) * float(p.current_price) >= 5.0]
                 open_count = len(real_positions)
 
-                # Micro hesap korumasi: $600 altinda daha korumaci ol
+                # === F&G BAZLI DİNAMİK GÜVEN EŞİĞİ ===
                 max_positions = CRYPTO_CONFIG["max_open_positions"]
-                min_confidence = 45
-                if self.equity < CRYPTO_CONFIG.get("micro_account_threshold", 600):
-                    max_positions = 1  # Sadece 1 pozisyon
-                    min_confidence = 45  # Kucuk hesap icin daha erisilebilir esik
+                min_confidence = 55  # Baz esik: sadece guclu sinyallere gir
+                fg_value = self._last_fg_value
+
+                if fg_value < 20:  # Extreme Fear → çok temkinli
+                    min_confidence = 65
+                    max_positions = 1
+                    if self.cycle_count % 20 == 1:
+                        logger.warning(
+                            f"  EXTREME FEAR MODU: F&G={fg_value} → "
+                            f"Min %{min_confidence} guven, max {max_positions} poz"
+                        )
+                elif fg_value < 40:  # Fear → temkinli
+                    min_confidence = 55
+                    max_positions = 1
+                    if self.cycle_count % 20 == 1:
+                        logger.warning(
+                            f"  FEAR MODU: F&G={fg_value} → "
+                            f"Min %{min_confidence} guven, max {max_positions} poz"
+                        )
+                elif self.equity < CRYPTO_CONFIG.get("micro_account_threshold", 600):
+                    max_positions = 1
+                    min_confidence = 45
                     if self.cycle_count == 1:
                         logger.warning(
                             f"  MICRO HESAP MODU: ${self.equity:.0f} < "
