@@ -171,7 +171,7 @@ CRYPTO_CONFIG = {
     "min_trade_value": 10.0,            # Min $10 islem (komisyon etkisi icin)
 
     # === ZAMANLAMA (DINAMIK — GUCLU SINYAL = HIZLI ISLEM) ===
-    "scan_interval_seconds": 30,        # Her 30 saniyede tara
+    "scan_interval_seconds": 10,        # Her 10 saniyede tara (hizli tepki)
     # Dinamik trade araligi: guclu sinyal hizli gir, zayif sinyal bekle
     "min_interval_high_conf": 5,        # %65+ guven: 5dk (guclu firsat, kacirma)
     "min_interval_med_conf": 10,        # %55-64 guven: 10dk
