@@ -28,12 +28,12 @@ from utils.logger import logger
 
 # crypto_bot.py'den aynı config
 BACKTEST_CONFIG = {
-    "stop_loss_pct": 0.015,             # %1.5 MINIMUM (ATR adaptif alt sinir)
+    "stop_loss_pct": 0.025,             # %2.5 MINIMUM (ATR adaptif alt sinir)
     "stop_loss_max_pct": 0.04,           # %4 MAKSIMUM (ATR adaptif ust sinir)
     "atr_stop_multiplier": 1.5,          # ATR carpani: stop = 1.5 * ATR%
-    "take_profit_pct": 0.035,           # %3.5 (komisyon etkisini karsilamak icin yukseltildi)
-    "trailing_stop_pct": 0.012,         # %1.2
-    "partial_profit_pct": 0.020,        # %2.0
+    "take_profit_pct": 0.050,           # %5.0 (2:1 R:R korunur)
+    "trailing_stop_pct": 0.020,         # %2.0
+    "partial_profit_pct": 0.030,        # %3.0
     "rsi_oversold": 30,
     "rsi_overbought": 72,
     "bb_proximity_pct": 0.012,
@@ -59,8 +59,8 @@ BACKTEST_CONFIG = {
 
     # === BREAK-EVEN STOP ===
     "breakeven_enabled": True,
-    "breakeven_trigger_pct": 0.015,
-    "breakeven_offset_pct": 0.001,
+    "breakeven_trigger_pct": 0.020,
+    "breakeven_offset_pct": 0.002,
 
     # === VOLATILITE FILTRESI ===
     "volatility_filter_enabled": True,
@@ -241,7 +241,7 @@ class CryptoBacktester:
             sell_score += 10
 
         # Karar
-        if buy_score >= 50:
+        if buy_score >= 55:
             signal = "BUY"
             confidence = min(buy_score, 100)
         elif sell_score >= 50:

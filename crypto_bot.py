@@ -111,12 +111,12 @@ CRYPTO_CONFIG = {
     # === SCALP HEDEFLERI (KUCUK HESAP OPTIMIZE) ===
     # Komisyon gidis-donus: %0.5 → kari en az %1.0 olmali
     # Risk/Odul: 1:2.3 (iyi oran)
-    "stop_loss_pct": 0.015,             # %1.5 MINIMUM stop (ATR adaptif alt sinir)
+    "stop_loss_pct": 0.025,             # %2.5 MINIMUM stop (ATR adaptif alt sinir — kripto volatilitesine uygun)
     "stop_loss_max_pct": 0.04,           # %4 MAKSIMUM stop (ATR adaptif ust sinir)
     "atr_stop_multiplier": 1.5,          # ATR carpani: stop = 1.5 * ATR%
-    "take_profit_pct": 0.035,           # %3.5 take-profit ($225 poz = $7.9 kazanc)
-    "trailing_stop_pct": 0.012,         # %1.2 trailing stop
-    "partial_profit_pct": 0.020,        # %2.0'de yarisini sat
+    "take_profit_pct": 0.050,           # %5.0 take-profit (2:1 R:R korunur)
+    "trailing_stop_pct": 0.020,         # %2.0 trailing stop (erken çıkışı önle)
+    "partial_profit_pct": 0.030,        # %3.0'de yarisini sat (kârı büyüt)
 
     # === SINYAL (KALITE ODAKLI — AZ AMA ISABETLI) ===
     "rsi_oversold": 30,                 # RSI 30 = gercek dip (daha secici)
@@ -154,8 +154,8 @@ CRYPTO_CONFIG = {
 
     # === BREAK-EVEN STOP ===
     "breakeven_enabled": True,
-    "breakeven_trigger_pct": 0.015,     # %1.5 karda break-even aktif
-    "breakeven_offset_pct": 0.001,      # Giris fiyatinin %0.1 ustune koy (komisyon)
+    "breakeven_trigger_pct": 0.020,     # %2.0 karda break-even aktif (dalgalanma payı)
+    "breakeven_offset_pct": 0.002,      # Giris fiyatinin %0.2 ustune koy (komisyon)
 
     # === VOLATİLİTE FİLTRESİ ===
     "volatility_filter_enabled": True,
@@ -180,6 +180,11 @@ CRYPTO_CONFIG = {
     # === KILL SWITCH (KUCUK HESAP KORUMASI) ===
     "max_daily_loss_pct": 0.025,        # %2.5 gunluk kayip ($500 = $12.5 max)
     "max_consecutive_errors": 5,
+
+    # === GÜNLÜK MİNİMUM İŞLEM ===
+    "min_daily_trades": 1,              # Günde en az 1 işlem hedefi
+    "min_daily_trade_relax_hour_utc": 12, # 12:00 UTC'den sonra eşik düşür
+    "min_daily_trade_confidence": 50,    # Relaxed confidence (normal: 60)
 }
 
 
@@ -274,6 +279,8 @@ class CryptoBot:
         self.sell_cooldown = {}  # BUG FIX: satis dongusu onleme
         self.cycle_count = 0
         self._last_fg_value = 50  # Fear & Greed cache (varsayilan: notr)
+        self._daily_buys_count = 0  # Günlük alım sayacı
+        self._last_buy_date = None  # Son alım tarihi (sıfırlama için)
 
         # Haber analiz modülü
         self.news = NewsAnalyzer()
@@ -623,7 +630,7 @@ class CryptoBot:
             sell_score += 10
 
         # === KARAR ===
-        if buy_score >= 40:
+        if buy_score >= 55:
             signal = "BUY"
             confidence = min(buy_score, 100)
         elif sell_score >= 40:
@@ -666,9 +673,7 @@ class CryptoBot:
             # Desen skorunu teknik analize ekle
             if pattern_score > 0:
                 tech["confidence"] = min(tech["confidence"] + pattern_score, 100)
-                if tech["signal"] == "HOLD" and pattern_score >= 20:
-                    tech["signal"] = "BUY"
-                    tech["confidence"] = max(tech["confidence"], 55)
+                # HOLD→BUY override kaldırıldı: desen tek başına BUY tetiklemesin
             elif pattern_score < 0:
                 if tech["signal"] == "BUY":
                     tech["confidence"] = max(tech["confidence"] + pattern_score, 0)
@@ -704,10 +709,9 @@ class CryptoBot:
                     if tech["confidence"] < 50:
                         tech["signal"] = "HOLD"
 
+            # HOLD→BUY override kaldırıldı: haber tek başına BUY tetiklemesin
             elif tech["signal"] == "HOLD" and news_score >= 30:
-                tech["signal"] = "BUY"
-                tech["confidence"] = 55
-                tech["reasons"].append(f"HABER_BUY({news_score})")
+                tech["reasons"].append(f"Haber_guclu:+{news_score}")
 
             elif tech["signal"] == "HOLD" and news_score <= -30:
                 tech["signal"] = "SELL"
@@ -799,10 +803,9 @@ class CryptoBot:
                 elif tech["signal"] == "BUY" and fund_score < -5:
                     tech["confidence"] = max(tech["confidence"] + fund_score, 0)
                     tech["reasons"].append(f"Fund:{fund_score}")
+                # HOLD→BUY override kaldırıldı: fundamental tek başına BUY tetiklemesin
                 elif tech["signal"] == "HOLD" and fund_score >= 15:
-                    tech["signal"] = "BUY"
-                    tech["confidence"] = max(55, fund_score)
-                    tech["reasons"].append(f"FUND_BUY({fund_score})")
+                    tech["reasons"].append(f"Fund_guclu:+{fund_score}")
 
             tech["fundamental_score"] = fund_score
             tech["fundamental_signal"] = fund_data.get("fundamental_signal", "NEUTRAL")
@@ -1017,6 +1020,7 @@ class CryptoBot:
                 "qty": qty, "time": datetime.now().isoformat(),
             })
             self.consecutive_errors = 0
+            self._daily_buys_count = getattr(self, '_daily_buys_count', 0) + 1
             return True
 
         except Exception as e:
@@ -1262,7 +1266,7 @@ class CryptoBot:
 
                 # === F&G BAZLI DİNAMİK GÜVEN EŞİĞİ ===
                 max_positions = CRYPTO_CONFIG["max_open_positions"]
-                min_confidence = 55  # Baz esik: normal modda %55
+                min_confidence = 60  # Baz esik: normal modda %60 (kalite filtresi)
                 fg_value = self._last_fg_value
 
                 if fg_value < 20:  # Extreme Fear → çok temkinli
@@ -1289,6 +1293,28 @@ class CryptoBot:
                             f"  MICRO HESAP MODU: ${self.equity:.0f} < "
                             f"${CRYPTO_CONFIG['micro_account_threshold']} → "
                             f"Max {max_positions} pozisyon, min %{min_confidence} guven"
+                        )
+                # === GÜNLÜK MİNİMUM İŞLEM MEKANİZMASI ===
+                from datetime import timezone
+                today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+                if self._last_buy_date != today_str:
+                    self._daily_buys_count = 0
+                    self._last_buy_date = today_str
+
+                utc_hour_now = datetime.now(timezone.utc).hour
+                min_daily = CRYPTO_CONFIG.get('min_daily_trades', 1)
+                relax_hour = CRYPTO_CONFIG.get('min_daily_trade_relax_hour_utc', 12)
+                relax_conf = CRYPTO_CONFIG.get('min_daily_trade_confidence', 50)
+
+                if (self._daily_buys_count < min_daily
+                    and utc_hour_now >= relax_hour
+                    and min_confidence > relax_conf):
+                    old_conf = min_confidence
+                    min_confidence = relax_conf
+                    if self.cycle_count % 30 == 1:
+                        logger.info(
+                            f"  GÜNLÜK İŞLEM: Bugün {self._daily_buys_count} alım, "
+                            f"eşik {old_conf}%→{min_confidence}% (en az {min_daily} işlem hedefi)"
                         )
 
                 # Her coin'i analiz et
@@ -1530,8 +1556,9 @@ if __name__ == "__main__":
 
     if args.status:
         load_dotenv()
+        is_paper = os.getenv("TRADING_MODE", "paper").lower() != "live"
         client = TradingClient(
-            os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"), paper=True
+            os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"), paper=is_paper
         )
         account = client.get_account()
         positions = client.get_all_positions()
