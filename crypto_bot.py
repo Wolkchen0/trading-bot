@@ -629,8 +629,19 @@ class CryptoBot:
         if trend == "DOWNTREND":
             sell_score += 10
 
+        # === MOMENTUM / BREAKOUT SINYALI (YENİ) ===
+        # Sadece dip alım değil, güçlü trend sürüşü de yakala
+        if trend == "UPTREND" and 40 <= rsi <= 65:
+            # Güçlü yükseliş trendi: EMA9 > EMA21, fiyat EMA50 üstünde
+            if momentum_up and volume_ok:
+                buy_score += 15
+                reasons.append("Momentum_BUY")
+            elif price_change_5 > 2.0:  # Son 5 barda %2+ artış
+                buy_score += 10
+                reasons.append(f"Breakout:{price_change_5:.1f}%")
+
         # === KARAR ===
-        if buy_score >= 55:
+        if buy_score >= 45:
             signal = "BUY"
             confidence = min(buy_score, 100)
         elif sell_score >= 40:
@@ -881,8 +892,9 @@ class CryptoBot:
                 risk_data=risk_data,
             )
             
-            # Coordinator kararını uygula (mevcut sinyali override et)
+            # Coordinator kararını uygula
             if coord_result["majority"] or coord_result["risk_veto"]:
+                # Çoğunluk veya veto → tam override
                 old_signal = tech["signal"]
                 tech["signal"] = coord_result["signal"]
                 tech["confidence"] = int(coord_result["confidence"])
@@ -893,6 +905,15 @@ class CryptoBot:
                         f"S:{coord_result['sell_count']}"
                         f"H:{coord_result['hold_count']})"
                     )
+            else:
+                # Çoğunluk yok, veto yok → teknik sinyali koru,
+                # coordinator güvenini %30 ağırlıkla karıştır
+                coord_conf = coord_result["confidence"]
+                tech_conf = tech["confidence"]
+                blended = int(tech_conf * 0.7 + coord_conf * 0.3)
+                tech["confidence"] = blended
+                if tech["signal"] == "BUY" and blended < 40:
+                    tech["signal"] = "HOLD"
             
             tech["coordinator"] = coord_result
             
@@ -1266,7 +1287,7 @@ class CryptoBot:
 
                 # === F&G BAZLI DİNAMİK GÜVEN EŞİĞİ ===
                 max_positions = CRYPTO_CONFIG["max_open_positions"]
-                min_confidence = 60  # Baz esik: normal modda %60 (kalite filtresi)
+                min_confidence = 50  # Baz esik: normal modda %50 (daha fazla firsat yakalama)
                 fg_value = self._last_fg_value
 
                 if fg_value < 20:  # Extreme Fear → çok temkinli
@@ -1278,7 +1299,7 @@ class CryptoBot:
                             f"Min %{min_confidence} guven, max {max_positions} poz"
                         )
                 elif fg_value < 40:  # Fear → temkinli
-                    min_confidence = 60
+                    min_confidence = 55
                     max_positions = 1
                     if self.cycle_count % 20 == 1:
                         logger.warning(
