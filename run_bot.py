@@ -32,10 +32,13 @@ os.makedirs(LOG_DIR, exist_ok=True)
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[WATCHDOG {ts}] {msg}"
-    print(line)
+    print(line, flush=True)  # Docker/Coolify loglarında anında görünsün
     log_file = os.path.join(LOG_DIR, f"watchdog_{datetime.now().strftime('%Y-%m-%d')}.log")
-    with open(log_file, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass  # Container'da dosya yazılamazsa devam et
 
 
 def should_stop():
@@ -63,6 +66,7 @@ def run_bot(live_mode=False):
         log(f"Bot PID: {process.pid}")
 
         # Çıktıyı oku ve logla
+        last_heartbeat = time.time()
         while process.poll() is None:
             if should_stop():
                 log("STOP_BOT dosyasi algilandi, bot durduruluyor...")
@@ -72,8 +76,14 @@ def run_bot(live_mode=False):
 
             line = process.stdout.readline()
             if line:
-                # Bot çıktısını watchdog loguna da yaz
-                print(line.rstrip())
+                # Bot çıktısını stdout'a yaz + flush (Docker/Coolify uyumlu)
+                print(line.rstrip(), flush=True)
+
+            # Heartbeat: her 5 dakikada bir watchdog'un yaşadığını logla
+            now = time.time()
+            if now - last_heartbeat > 300:  # 5 dakika
+                log(f"HEARTBEAT: Watchdog alive, bot PID={process.pid}")
+                last_heartbeat = now
 
         exit_code = process.returncode
         log(f"Bot kapandi - Exit code: {exit_code}")

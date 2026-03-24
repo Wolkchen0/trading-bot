@@ -1502,6 +1502,23 @@ class CryptoBot:
                 if self.cycle_count % 5 == 0 or self.trades_today:
                     self._print_status()
 
+                # HEARTBEAT: her 30 döngüde (~5dk) bot'un yaşadığını logla
+                if self.cycle_count % 30 == 0:
+                    last_trade_str = "yok"
+                    if self.last_trade_time:
+                        last_sym = max(self.last_trade_time, key=self.last_trade_time.get)
+                        last_t = self.last_trade_time[last_sym]
+                        ago = (datetime.now() - last_t).total_seconds() / 3600
+                        last_trade_str = f"{last_sym} {ago:.1f}h once"
+                    logger.info(
+                        f"  HEARTBEAT | Cycle:{self.cycle_count} | "
+                        f"Equity:${self.equity:,.2f} | "
+                        f"Pos:{len(self.positions)} | "
+                        f"Trades:{len(self.trades_today)} | "
+                        f"LastTrade:{last_trade_str} | "
+                        f"Errors:{self.consecutive_errors}"
+                    )
+
                 # Bekleme
                 interval = CRYPTO_CONFIG["scan_interval_seconds"]
                 if self.cycle_count % 5 == 0:

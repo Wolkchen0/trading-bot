@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Python stdout buffer'ını kapat — loglar anında Docker'a yazılsın
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 # Python bağımlılıkları
