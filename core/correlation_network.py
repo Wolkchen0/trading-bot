@@ -10,6 +10,7 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from utils.logger import logger
+from config import COIN_IDS as _COIN_IDS
 
 try:
     import networkx as nx
@@ -32,14 +33,8 @@ class CorrelationNetwork:
 
     COINGECKO_URL = "https://api.coingecko.com/api/v3"
     
-    # CoinGecko ID mapping
-    COIN_IDS = {
-        "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
-        "XRP": "ripple", "DOGE": "dogecoin", "SHIB": "shiba-inu",
-        "PEPE": "pepe", "LINK": "chainlink", "AVAX": "avalanche-2",
-        "ADA": "cardano", "DOT": "polkadot", "LTC": "litecoin",
-        "UNI": "uniswap", "AAVE": "aave", "BONK": "bonk",
-    }
+    # CoinGecko ID mapping — merkezi config'den
+    COIN_IDS = _COIN_IDS
 
     def __init__(self):
         self.graph = None

@@ -14,7 +14,7 @@ import time
 import json
 import argparse
 import atexit
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 # Proje kök dizinini ekle
@@ -25,7 +25,7 @@ load_dotenv()
 
 import pandas as pd
 import numpy as np
-import yfinance as yf
+
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD
 from ta.volatility import BollingerBands, AverageTrueRange
@@ -185,6 +185,12 @@ CRYPTO_CONFIG = {
     "min_daily_trades": 1,              # Günde en az 1 işlem hedefi
     "min_daily_trade_relax_hour_utc": 12, # 12:00 UTC'den sonra eşik düşür
     "min_daily_trade_confidence": 50,    # Relaxed confidence (normal: 60)
+
+    # === ZAMANLAMA SABİTLERİ ===
+    "error_retry_sleep": 30,            # Hata sonrası bekleme (saniye)
+    "heartbeat_interval": 30,           # Her N döngüde heartbeat logla
+    "status_report_interval": 5,        # Her N döngüde durum raporu
+    "min_position_close_usd": 5.0,      # Bu değerin altındaki pozisyonları kapa
 }
 
 
@@ -367,20 +373,6 @@ class CryptoBot:
             return df
         except Exception as e:
             logger.error(f"{symbol} veri cekilemedi: {e}")
-            # Fallback: yfinance
-            return self._get_yfinance_data(symbol)
-
-    def _get_yfinance_data(self, symbol: str) -> pd.DataFrame:
-        """yfinance fallback veri kaynağı."""
-        try:
-            yf_symbol = symbol.replace("/", "-")
-            df = yf.download(yf_symbol, period="1mo", interval="1h", progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [c.lower() for c in df.columns]
-            return df
-        except Exception as e:
-            logger.error(f"{symbol} yfinance verisi cekilemedi: {e}")
             return pd.DataFrame()
 
     # ============================================================
@@ -1316,7 +1308,6 @@ class CryptoBot:
                             f"Max {max_positions} pozisyon, min %{min_confidence} guven"
                         )
                 # === GÜNLÜK MİNİMUM İŞLEM MEKANİZMASI ===
-                from datetime import timezone
                 today_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
                 if self._last_buy_date != today_str:
                     self._daily_buys_count = 0
@@ -1377,7 +1368,6 @@ class CryptoBot:
                     # --- Zaman Filtresi ---
                     time_blocked = False
                     if CRYPTO_CONFIG.get("time_filter_enabled", True) and analysis["signal"] == "BUY":
-                        from datetime import timezone
                         utc_hour = datetime.now(timezone.utc).hour
                         start_h = CRYPTO_CONFIG.get("time_filter_start_utc", 0)
                         end_h = CRYPTO_CONFIG.get("time_filter_end_utc", 6)
@@ -1451,9 +1441,8 @@ class CryptoBot:
                                     'volume': 'sum'
                                 }).dropna()
                                 if len(df_4h) >= 20:
-                                    from ta.trend import EMAIndicator as EMA4h
-                                    ema9_4h = EMA4h(df_4h['close'], window=9).ema_indicator().iloc[-1]
-                                    ema21_4h = EMA4h(df_4h['close'], window=21).ema_indicator().iloc[-1]
+                                    ema9_4h = EMAIndicator(df_4h['close'], window=9).ema_indicator().iloc[-1]
+                                    ema21_4h = EMAIndicator(df_4h['close'], window=21).ema_indicator().iloc[-1]
                                     if ema9_4h < ema21_4h:  # 4h downtrend
                                         mtf_blocked = True
                                         logger.debug(f"  {symbol} MTF GATE: 4h trend dususte (EMA9 < EMA21), BUY engellendi")

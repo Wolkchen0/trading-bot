@@ -14,33 +14,14 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from utils.logger import logger
-
+from config import COIN_IDS
 
 FUNDAMENTAL_CONFIG = {
     # CoinGecko API
     "coingecko_base": "https://api.coingecko.com/api/v3",
 
-    # Coin ID mapping (Alpaca symbol -> CoinGecko ID)
-    "coin_ids": {
-        "BTC": "bitcoin",
-        "ETH": "ethereum",
-        "SOL": "solana",
-        "XRP": "ripple",
-        "DOGE": "dogecoin",
-        "SHIB": "shiba-inu",
-        "PEPE": "pepe",
-        "LINK": "chainlink",
-        "AVAX": "avalanche-2",
-        "ADA": "cardano",
-        "DOT": "polkadot",
-        "LTC": "litecoin",
-        "BONK": "bonk",
-        "ARB": "arbitrum",
-        "UNI": "uniswap",
-        "AAVE": "aave",
-        "RENDER": "render-token",
-        "ONDO": "ondo-finance",
-    },
+    # Coin ID mapping — merkezi config'den gelir
+    "coin_ids": COIN_IDS,
 
     # Cache
     "cache_minutes": 15,  # CoinGecko rate limit korumasi

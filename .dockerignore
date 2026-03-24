@@ -6,3 +6,4 @@ crypto_trade_history.json
 kill_switch_state.json
 *.log
 .git/
+_legacy/

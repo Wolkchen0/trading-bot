@@ -16,6 +16,7 @@ import json
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from config import COIN_SEARCH_TERMS
 from utils.logger import logger
 
 # VADER sentiment (nltk tabanlı — hafif ve etkili)
@@ -54,29 +55,8 @@ SOCIAL_CONFIG = {
     "whale_alert_url": "https://api.whale-alert.io/v1/transactions",
     "whale_min_usd": 1000000,  # $1M+ transferler
 
-    # Coin anahtar kelimeleri
-    "coin_search_terms": {
-        "BTC": ["bitcoin", "btc"],
-        "ETH": ["ethereum", "eth", "vitalik"],
-        "SOL": ["solana"],
-        "XRP": ["ripple", "xrp"],
-        "DOGE": ["dogecoin", "doge"],
-        "SHIB": ["shiba inu", "shib"],
-        "PEPE": ["pepe coin"],
-        "LINK": ["chainlink"],
-        "AVAX": ["avalanche"],
-        "ADA": ["cardano"],
-        "DOT": ["polkadot"],
-        "LTC": ["litecoin"],
-        "BONK": ["bonk"],
-        "ARB": ["arbitrum"],
-        "RENDER": ["render token"],
-        "TRUMP": ["trump coin", "trump crypto"],
-        "ONDO": ["ondo finance"],
-        "WIF": ["dogwifhat", "wif"],
-        "UNI": ["uniswap"],
-        "AAVE": ["aave"],
-    },
+    # Coin anahtar kelimeleri — merkezi config'den
+    "coin_search_terms": COIN_SEARCH_TERMS,
 
     # Cache
     "cache_minutes": 10,

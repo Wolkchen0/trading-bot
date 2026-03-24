@@ -201,3 +201,53 @@ DATA_CONFIG = {
     "warn_on_delayed_data": True,        # Gecikmeli veri uyarısı
 }
 
+# ============================================================
+# MERKEZİ COİN TANIMLARI (TÜM MODÜLLER BURADAN IMPORT EDER)
+# ============================================================
+# Alpaca symbol -> CoinGecko ID mapping
+COIN_IDS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "XRP": "ripple",
+    "DOGE": "dogecoin",
+    "SHIB": "shiba-inu",
+    "PEPE": "pepe",
+    "LINK": "chainlink",
+    "AVAX": "avalanche-2",
+    "ADA": "cardano",
+    "DOT": "polkadot",
+    "LTC": "litecoin",
+    "BONK": "bonk",
+    "ARB": "arbitrum",
+    "UNI": "uniswap",
+    "AAVE": "aave",
+    "RENDER": "render-token",
+    "ONDO": "ondo-finance",
+    "TRUMP": "trump-coin",
+    "WIF": "dogwifhat",
+}
+
+# Coin anahtar kelimeleri (haber & sosyal medya arama)
+COIN_SEARCH_TERMS = {
+    "BTC": ["bitcoin", "btc", "satoshi"],
+    "ETH": ["ethereum", "eth", "vitalik"],
+    "SOL": ["solana", "sol"],
+    "XRP": ["ripple", "xrp", "sec lawsuit"],
+    "DOGE": ["dogecoin", "doge", "elon", "musk"],
+    "SHIB": ["shiba inu", "shib", "shibarium"],
+    "PEPE": ["pepe", "memecoin"],
+    "LINK": ["chainlink", "link", "oracle"],
+    "AVAX": ["avalanche", "avax"],
+    "ADA": ["cardano", "ada"],
+    "DOT": ["polkadot", "dot"],
+    "LTC": ["litecoin"],
+    "BONK": ["bonk"],
+    "ARB": ["arbitrum"],
+    "RENDER": ["render token"],
+    "TRUMP": ["trump coin", "trump crypto"],
+    "ONDO": ["ondo finance"],
+    "WIF": ["dogwifhat", "wif"],
+    "UNI": ["uniswap"],
+    "AAVE": ["aave"],
+}
