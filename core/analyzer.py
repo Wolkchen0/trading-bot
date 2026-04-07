@@ -1,7 +1,7 @@
 """
 Technical Analyzer — Teknik + Hibrit Analiz Motoru
 
-CryptoBot'tan ayrıştırılmış analiz modülü.
+StockBot'tan ayrıştırılmış analiz modülü.
 - analyze(): Saf teknik analiz (RSI, EMA, MACD, BB, Ichimoku, ADX, OBV, Fibonacci, S/R)
 - analyze_with_news(): Teknik + haber + makro + ML + fundamental + ESG + korelasyon + agent
 """
@@ -19,12 +19,12 @@ from utils.logger import logger
 
 
 class TechnicalAnalyzer:
-    """Teknik ve hibrit analiz motoru. CryptoBot referansı üzerinden state'e erişir."""
+    """Teknik ve hibrit analiz motoru. StockBot referansı üzerinden state'e erişir."""
 
     def __init__(self, bot):
         """
         Args:
-            bot: CryptoBot instance (state erişimi için)
+            bot: StockBot instance (state erişimi için)
         """
         self.bot = bot
 

@@ -1,7 +1,7 @@
 """
 Position Manager — Pozisyon Yönetimi
 
-CryptoBot'tan ayrıştırılmış pozisyon modülü.
+StockBot'tan ayrıştırılmış pozisyon modülü.
 - manage_positions(): Trailing stop, break-even, kademeli kâr alma, stop-loss
 """
 from datetime import datetime
@@ -14,7 +14,7 @@ from utils.logger import logger
 
 
 class PositionManager:
-    """Açık pozisyonları yönetir. CryptoBot referansı üzerinden state'e erişir."""
+    """Açık pozisyonları yönetir. StockBot referansı üzerinden state'e erişir."""
 
     def __init__(self, bot):
         self.bot = bot

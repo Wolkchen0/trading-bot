@@ -1,13 +1,14 @@
 """
 Macro Data Module — Makroekonomik Veri Entegrasyonu
-FRED API + Fed takvimi + Ekonomik göstergeler
+FRED API + Fed takvimi + Ekonomik göstergeler + VIX + Petrol
 
 Takip edilen veriler:
   1. Federal Funds Rate (faiz orani)
   2. CPI (tuketici fiyat endeksi — enflasyon)
   3. DXY/USD Index (dolar gucunu etkiler)
   4. 10-Year Treasury Yield
-  5. Fed konusma/toplanti takvimi
+  5. VIX (korku endeksi) — YENİ
+  6. Petrol fiyatları (Hürmüz Boğazı riski) — YENİ
 """
 import os
 import requests
@@ -24,19 +25,19 @@ MACRO_CONFIG = {
     "series": {
         "FEDFUNDS": {
             "name": "Federal Funds Rate",
-            "impact": "Faiz artisi -> Kripto BEARISH, Faiz dususu -> BULLISH",
+            "impact": "Faiz artisi -> Hisse BEARISH, Faiz dususu -> BULLISH",
         },
         "CPIAUCSL": {
             "name": "CPI (Enflasyon)",
-            "impact": "Yuksek enflasyon -> Fed sikilasmasi -> BEARISH",
+            "impact": "Yuksek enflasyon -> Fed sikilasmasi -> Hisse BEARISH",
         },
         "DGS10": {
             "name": "10-Yillik Tahvil Getirisi",
-            "impact": "Yukselis -> Riskli varliklar duser -> BEARISH",
+            "impact": "Yukselis -> Growth hisseler duser -> BEARISH",
         },
         "UNRATE": {
             "name": "Issizlik Orani",
-            "impact": "Yuksek issizlik -> Fed gevsetir -> BULLISH",
+            "impact": "Yuksek issizlik -> Fed gevsetir -> Hisse BULLISH",
         },
     },
 
@@ -50,7 +51,7 @@ MACRO_CONFIG = {
 
 
 class MacroDataAnalyzer:
-    """Makroekonomik veri analizi — kripto piyasasina etki."""
+    """Makroekonomik veri analizi — hisse senedi piyasasına etki."""
 
     def __init__(self):
         self.fred_api_key = os.getenv("FRED_API_KEY", "")
@@ -146,8 +147,8 @@ class MacroDataAnalyzer:
     def analyze_interest_rates(self) -> Dict:
         """
         Fed faiz orani analizi.
-        Faiz artisi → kripto BEARISH
-        Faiz dususu → kripto BULLISH
+        Faiz artisi → hisse BEARISH
+        Faiz dususu → hisse BULLISH
         """
         data = self.get_fred_series("FEDFUNDS", limit=3)
 
@@ -194,8 +195,8 @@ class MacroDataAnalyzer:
     def analyze_inflation(self) -> Dict:
         """
         CPI / Enflasyon analizi.
-        Yuksek enflasyon → Fed sikilasmasi → kripto BEARISH
-        Dusen enflasyon → Fed gevsetmesi → kripto BULLISH
+        Yuksek enflasyon → Fed sikilasmasi → hisse BEARISH
+        Dusen enflasyon → Fed gevsetmesi → hisse BULLISH
         """
         data = self.get_fred_series("CPIAUCSL", limit=3)
 
@@ -231,8 +232,8 @@ class MacroDataAnalyzer:
     def analyze_dollar_strength(self) -> Dict:
         """
         DXY/Dolar gucunu tahmin et.
-        Guclu dolar → kripto BEARISH
-        Zayif dolar → kripto BULLISH
+        Guclu dolar → hisse BEARISH (ihracat zayiflar)
+        Zayif dolar → hisse BULLISH
         """
         data = self.get_fred_series("DGS10", limit=5)
 
@@ -268,17 +269,20 @@ class MacroDataAnalyzer:
     def get_macro_score(self) -> Dict:
         """
         Tum makroekonomik gostergeleri birlestir.
-        Agirliklar: Faiz %40 + Enflasyon %30 + Dolar %30
+        Agirliklar: Faiz %30 + Enflasyon %20 + Dolar %20 + VIX %30
         """
         rates = self.analyze_interest_rates()
         inflation = self.analyze_inflation()
         dollar = self.analyze_dollar_strength()
+        vix = self.analyze_vix()
+        oil = self.analyze_oil_price()
 
         # Agirlikli skor
         total_score = int(
-            rates["score"] * 0.40 +
-            inflation["score"] * 0.30 +
-            dollar["score"] * 0.30
+            rates["score"] * 0.30 +
+            inflation["score"] * 0.20 +
+            dollar["score"] * 0.20 +
+            vix["score"] * 0.30
         )
 
         if total_score >= 15:
@@ -298,16 +302,143 @@ class MacroDataAnalyzer:
             "interest_rate": rates,
             "inflation": inflation,
             "dollar": dollar,
+            "vix": vix,
+            "oil": oil,
         }
 
         logger.info(
             f"  Makro: Faiz({rates['score']}) "
             f"Enflasyon({inflation['score']}) "
             f"Dolar({dollar['score']}) "
+            f"VIX({vix['score']}) "
+            f"Petrol({oil.get('signal', 'N/A')}) "
             f"-> Toplam:{total_score} {signal}"
         )
 
         return result
+
+    # ============================================================
+    # 6. VIX (KORKU ENDEKSİ)
+    # ============================================================
+
+    def analyze_vix(self) -> Dict:
+        """
+        VIX analizi — piyasa korku seviyesi.
+        VIX < 15 → düşük korku → BULLISH
+        VIX 15-25 → normal
+        VIX 25-35 → yüksek korku → BEARISH
+        VIX > 35 → panik → çok BEARISH (ama contrarian BULLISH olabilir)
+        """
+        cache_key = "vix"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        try:
+            # Yahoo Finance'den VIX çek
+            url = "https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX"
+            params = {"range": "5d", "interval": "1d"}
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+                closes = [c for c in closes if c is not None]
+                if closes:
+                    current_vix = closes[-1]
+                    prev_vix = closes[-2] if len(closes) >= 2 else current_vix
+
+                    score = 0
+                    if current_vix < 15:
+                        score = 15
+                        signal = "BULLISH"
+                    elif current_vix < 20:
+                        score = 5
+                        signal = "SLIGHTLY_BULLISH"
+                    elif current_vix < 25:
+                        score = 0
+                        signal = "NEUTRAL"
+                    elif current_vix < 35:
+                        score = -15
+                        signal = "BEARISH"
+                    else:
+                        score = -25
+                        signal = "VERY_BEARISH"
+
+                    result = {
+                        "score": score,
+                        "signal": signal,
+                        "vix": round(current_vix, 2),
+                        "change": round(current_vix - prev_vix, 2),
+                        "description": f"VIX: {current_vix:.2f} (korku seviyesi: {signal})",
+                    }
+                    self.cache[cache_key] = result
+                    self.last_fetch[cache_key] = datetime.now()
+                    return result
+
+        except Exception as e:
+            logger.debug(f"VIX verisi alinamadi: {e}")
+
+        return {"score": 0, "signal": "NEUTRAL", "vix": 0, "description": "VIX verisi yok"}
+
+    # ============================================================
+    # 7. PETROL FİYATLARI (HÜRMÜZ BOĞAZI RİSKİ)
+    # ============================================================
+
+    def analyze_oil_price(self) -> Dict:
+        """
+        Petrol fiyat analizi — enerji sektörü ve jeopolitik risk.
+        Petrol yükseliş → enerji hisseleri BULLISH, genel piyasa BEARISH
+        Petrol düşüş → enerji hisseleri BEARISH, genel piyasa BULLISH
+        """
+        cache_key = "oil"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        try:
+            # Yahoo Finance'den USO (petrol ETF) çek
+            url = "https://query1.finance.yahoo.com/v8/finance/chart/USO"
+            params = {"range": "5d", "interval": "1d"}
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+                closes = [c for c in closes if c is not None]
+                if len(closes) >= 2:
+                    current = closes[-1]
+                    prev = closes[-2]
+                    change_pct = (current - prev) / prev * 100
+
+                    if change_pct > 5:
+                        signal = "SPIKE"
+                        risk = "Petrol spike — Hürmüz Boğazı riski olabilir"
+                    elif change_pct > 2:
+                        signal = "RISING"
+                        risk = "Petrol yükselişte"
+                    elif change_pct < -3:
+                        signal = "DROPPING"
+                        risk = "Petrol düşüşte — genel piyasa için olumlu"
+                    else:
+                        signal = "STABLE"
+                        risk = "Petrol stabil"
+
+                    result = {
+                        "signal": signal,
+                        "price": round(current, 2),
+                        "change_pct": round(change_pct, 2),
+                        "risk": risk,
+                        "description": f"Petrol(USO): ${current:.2f} ({change_pct:+.1f}%) — {signal}",
+                    }
+                    self.cache[cache_key] = result
+                    self.last_fetch[cache_key] = datetime.now()
+                    return result
+
+        except Exception as e:
+            logger.debug(f"Petrol verisi alinamadi: {e}")
+
+        return {"signal": "UNKNOWN", "price": 0, "description": "Petrol verisi yok"}
 
     # ============================================================
     # CACHE YÖNETİMİ

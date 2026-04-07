@@ -84,7 +84,7 @@ class TechAgent:
 
 
 class FundAgent:
-    """Temel analiz ajanı — MCap, Volume, Supply, Momentum."""
+    """Temel analiz ajanı — P/E, EPS, Revenue, Margin, Analist hedef."""
     
     NAME = "FundAgent"
     
@@ -94,18 +94,24 @@ class FundAgent:
         
         reasons = []
         
-        mcap_change = fund_data.get("mcap_change_24h", 0)
-        if abs(mcap_change) > 5:
-            reasons.append(f"MCap 24h:{mcap_change:+.1f}%")
+        # P/E oranı
+        pe = fund_data.get("metrics", {}).get("pe_ratio", 0)
+        if pe > 0 and pe < 15:
+            reasons.append(f"P/E düşük ({pe:.1f}) — değer fırsatı")
+        elif pe > 40:
+            reasons.append(f"P/E yüksek ({pe:.1f}) — pahalı")
         
-        volume_spike = fund_data.get("volume_spike", False)
-        if volume_spike:
-            reasons.append("Volume spike tespit edildi")
+        # EPS
+        eps = fund_data.get("metrics", {}).get("eps", 0)
+        if eps > 0:
+            reasons.append(f"EPS pozitif ({eps:.2f})")
+        elif eps < 0:
+            reasons.append(f"EPS negatif ({eps:.2f}) — zarar")
         
-        momentum = fund_data.get("price_momentum", {})
-        m_7d = momentum.get("7d", 0)
-        if abs(m_7d) > 10:
-            reasons.append(f"7d momentum:{m_7d:+.1f}%")
+        # Profit margin
+        margin = fund_data.get("metrics", {}).get("profit_margin", 0)
+        if margin > 0.15:
+            reasons.append(f"Kâr marjı güçlü ({margin:.0%})")
         
         if score >= 10:
             signal = "BUY"
@@ -164,7 +170,7 @@ class SentAgent:
 
 
 class SocialAgent:
-    """Sosyal medya ajanı — Reddit, X, CoinGecko Trending, Whale Alert."""
+    """Sosyal medya ajanı — Reddit (r/stocks, r/wallstreetbets), X/Twitter."""
     
     NAME = "SocialAgent"
     
@@ -183,15 +189,13 @@ class SocialAgent:
             x_sent = social_data.get("x_sentiment", 0)
             reasons.append(f"X: {x_tweets} tweet (sent:{x_sent:.2f})")
         
-        if social_data.get("coingecko_trending", False):
-            reasons.append("CoinGecko TRENDING")
+        if social_data.get("wsb_hype", False):
+            reasons.append("🚀 WSB HYPE!")
+            score += 5  # WSB hype ek puan
         
-        whale_score = social_data.get("whale_score", 0)
-        if whale_score != 0:
-            reasons.append(f"Whale skor: {whale_score:+d}")
-        
-        if social_data.get("social_spike", False):
-            reasons.append("⚠️ Sosyal hacim SPIKE!")
+        mentions_trend = social_data.get("mentions_trend", "STABLE")
+        if mentions_trend == "UP":
+            reasons.append("Sosyal bahsediş artışta")
         
         if score >= 10:
             signal = "BUY"
@@ -208,7 +212,7 @@ class SocialAgent:
 
 class RiskAgent:
     """
-    Risk yönetim ajanı — ATR, drawdown, pozisyon limiti, korelasyon.
+    Risk yönetim ajanı — ATR, drawdown, pozisyon limiti, VIX, jeopolitik.
     
     ÖNEMLİ: RiskAgent'ın SELL oyu → BUY'ı veto eder!
     """
@@ -238,17 +242,29 @@ class RiskAgent:
             risk_score -= 15
             reasons.append(f"Yüksek volatilite ATR={atr_pct:.1f}%")
         
-        # Korelasyon riski
-        contagion_risk = risk_data.get("contagion_risk_score", 0)
-        if contagion_risk > 60:
-            risk_score -= 20
-            reasons.append(f"Bulaşma riski yüksek: {contagion_risk}")
+        # Korelasyon riski → VIX bazlı piyasa riski
+        vix = risk_data.get("vix", 0)
+        if vix > 35:
+            risk_score -= 25
+            reasons.append(f"VIX PANİK: {vix:.1f}")
+        elif vix > 25:
+            risk_score -= 15
+            reasons.append(f"VIX yüksek: {vix:.1f}")
         
-        # ESG riski
-        esg_risk = risk_data.get("esg_risk_level", "MEDIUM")
-        if esg_risk == "HIGH":
+        # Jeopolitik risk (petrol, savaş haberleri)
+        geo_risk = risk_data.get("geopolitical_risk", "NORMAL")
+        if geo_risk == "HIGH":
+            risk_score -= 20
+            reasons.append("⚠️ Jeopolitik risk YÜKSEK")
+        elif geo_risk == "ELEVATED":
             risk_score -= 10
-            reasons.append("ESG risk: YÜKSEK")
+            reasons.append("Jeopolitik risk yükselmekte")
+        
+        # Petrol spike (Hürmüz Boğazı)
+        oil_signal = risk_data.get("oil_signal", "STABLE")
+        if oil_signal == "SPIKE":
+            risk_score -= 15
+            reasons.append("🛢️ Petrol SPIKE — Hürmüz Boğazı riski!")
         
         # Equity floor kontrolü
         equity_floor_hit = risk_data.get("equity_floor_hit", False)

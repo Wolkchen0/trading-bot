@@ -15,5 +15,5 @@ COPY . .
 # Log klasörünü oluştur
 RUN mkdir -p logs
 
-# LIVE MOD: Watchdog ile botu calistir (--live parametresi)
-CMD ["python", "-u", "run_bot.py", "--live"]
+# STOCK BOT: Ana botu çalıştır
+CMD ["python", "-u", "stock_bot.py"]

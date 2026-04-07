@@ -1,11 +1,11 @@
 """
-Kripto Haber Takip & Gelişmiş Duygu Analizi Modülü
-- CryptoPanic API (ücretsiz)
-- Fear & Greed Index (ücretsiz)
-- Anahtar kelime bazlı duygu analizi
-- Multi-timeframe sentiment analizi (YENİ)
-- Contrarian sinyaller (YENİ)
-- Zaman ağırlıklı haber skoru (YENİ)
+Hisse Senedi Haber Takip & Gelişmiş Duygu Analizi Modülü
+- Alpha Vantage News API
+- Marketaux API  
+- Finviz haber tarama
+- Fear & Greed Index (CNN)
+- FinBERT + VADER duygu analizi
+- Jeopolitik risk takibi (Hürmüz Boğazı, petrol, savaş)
 """
 import os
 import time
@@ -13,7 +13,21 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from utils.logger import logger
-from core.social_sentiment import SocialSentimentAnalyzer
+from config import STOCK_SEARCH_TERMS, GEOPOLITICAL_KEYWORDS
+
+# FinBERT (opsiyonel)
+try:
+    from core.finbert_analyzer import FinBERTAnalyzer
+    FINBERT_AVAILABLE = True
+except ImportError:
+    FINBERT_AVAILABLE = False
+
+# VADER fallback
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    VADER_AVAILABLE = True
+except ImportError:
+    VADER_AVAILABLE = False
 
 
 # ============================================================
@@ -22,569 +36,397 @@ from core.social_sentiment import SocialSentimentAnalyzer
 NEWS_CONFIG = {
     # Duygu analizi anahtar kelimeleri
     "bullish_keywords": [
-        # Genel pozitif
-        "surge", "soar", "rally", "pump", "moon", "breakout", "bullish",
-        "all-time high", "ath", "record high", "skyrocket", "boom",
-        "adoption", "partnership", "institutional", "approval",
-        # ETF & Düzenleme pozitif
-        "etf approved", "sec approval", "regulation clarity",
-        "spot etf", "bitcoin etf",
-        # Kurumsal alım
-        "tesla buys", "microstrategy", "institutional buy",
-        "whale accumulation", "large purchase",
-        # Teknoloji pozitif
-        "upgrade", "launch", "mainnet", "halving", "burn",
-        "staking rewards", "defi growth",
-        # Yükseliş (Türkçe)
-        "yukselis", "rekor", "artis", "boğa", "patlama",
+        # Hisse pozitif
+        "earnings beat", "revenue growth", "guidance raised", "buyback",
+        "stock buyback", "dividend increase", "upgrade", "outperform",
+        "strong buy", "price target raised", "record revenue", "beats estimates",
+        "exceeded expectations", "upside surprise", "market rally",
+        "bull market", "all-time high", "ipo success", "merger", "acquisition",
+        "partnership", "contract win", "fda approval", "patent granted",
+        # Makro pozitif
+        "rate cut", "inflation cools", "jobs growth", "stimulus",
+        "fed dovish", "soft landing", "ceasefire", "peace deal",
+        "trade deal", "sanctions lifted",
     ],
     "bearish_keywords": [
-        # Genel negatif
-        "crash", "dump", "plunge", "collapse", "bearish", "sell-off",
-        "liquidation", "fear", "panic", "tumble", "drop", "decline",
-        "bloodbath", "capitulation", "correction",
-        # Duzenleme negatif
-        "ban", "crackdown", "lawsuit", "sec sues", "regulation",
-        "china ban", "restrict", "illegal", "fraud", "scam",
-        # Hack & Guvenlik
-        "hack", "exploit", "breach", "stolen", "rug pull",
-        "vulnerability", "attack", "compromised",
-        # Ekonomi negatif
-        "recession", "inflation", "rate hike", "fed hawkish",
-        "bankruptcy", "insolvent", "ftx", "terra luna",
-        # JEOPOLITIK KRIZ
+        # Hisse negatif
+        "earnings miss", "revenue decline", "guidance lowered", "downgrade",
+        "underperform", "sell rating", "price target cut", "missed estimates",
+        "profit warning", "layoffs", "restructuring", "sec investigation",
+        "class action lawsuit", "data breach", "product recall", "ceo resign",
+        "insider selling", "dilution", "secondary offering",
+        # Makro negatif
+        "rate hike", "inflation surge", "recession", "unemployment rise",
+        "fed hawkish", "default risk", "banking crisis", "yield inversion",
+        "bear market", "sell-off", "crash", "panic",
+        # Jeopolitik
         "war escalat", "military strike", "missile", "strait of hormuz",
-        "oil surge", "oil spike", "sanctions", "embargo",
-        "nuclear", "invasion", "bombing", "retaliati",
-        "economic collapse", "supply disruption",
-        # Dusus (Turkce)
-        "dusus", "cokus", "panik", "kayip", "savas",
-    ],
-    "high_impact_keywords": [
-        # Bu kelimeler varsa etki x2
-        "breaking", "just in", "urgent", "flash",
-        "elon musk", "trump", "sec", "fed", "federal reserve",
-        "binance", "coinbase", "blackrock", "grayscale",
-        # JEOPOLITIK
-        "iran", "israel", "hormuz", "oil price", "crude oil",
-        "ceasefire", "ateskes", "peace deal", "war",
-        "pentagon", "military", "strait",
+        "oil surge", "oil spike", "sanctions", "embargo", "tariff war",
+        "invasion", "bombing", "nuclear", "blockade", "supply disruption",
     ],
 
-    # Coin-spesifik haber takibi
-    "coin_keywords": {
-        "BTC": ["bitcoin", "btc", "satoshi"],
-        "ETH": ["ethereum", "eth", "vitalik"],
-        "SOL": ["solana", "sol"],
-        "XRP": ["ripple", "xrp", "sec lawsuit"],
-        "DOGE": ["dogecoin", "doge", "elon", "musk"],
-        "SHIB": ["shiba", "shib", "shibarium"],
-        "PEPE": ["pepe", "memecoin"],
-        "LINK": ["chainlink", "link", "oracle"],
-        "AVAX": ["avalanche", "avax"],
-        "ADA": ["cardano", "ada"],
-        "DOT": ["polkadot", "dot"],
-        "TRUMP": ["trump coin", "trump crypto"],
-    },
+    # Cache süresi
+    "cache_minutes": 10,  # Haber hızlı eskir
 
-    # API ayarları
-    "cryptopanic_url": "https://cryptopanic.com/api/free/v1/posts/",
-    "fear_greed_url": "https://api.alternative.me/fng/",
-    "news_cache_minutes": 5,
-    "max_news_age_hours": 4,
-
-    # Zaman ağırlığı (YENİ)
-    "time_decay": {
-        "1h": 1.0,    # Son 1 saat: tam ağırlık
-        "4h": 0.5,    # 1-4 saat: yarı ağırlık
-        "24h": 0.25,  # 4-24 saat: çeyrek ağırlık
-    },
+    # API rate limit koruması
+    "alpha_vantage_cooldown": 15,  # AV: dakikada 5 istek (ücretsiz)
+    "marketaux_cooldown": 10,
 }
 
 
-class NewsAnalyzer:
-    """Gelişmiş kripto haber takip ve duygu analizi."""
+class StockNewsAnalyzer:
+    """Hisse senedi haberleri analizi — Alpha Vantage + Marketaux."""
 
     def __init__(self):
+        self.alpha_vantage_key = os.getenv("ALPHA_VANTAGE_KEY", "")
+        self.marketaux_token = os.getenv("MARKETAUX_TOKEN", "")
         self.cache = {}
-        self.last_fetch_time = None
-        self.fear_greed_cache = None
-        self.fear_greed_time = None
-        self.social = SocialSentimentAnalyzer()
-        logger.info("NewsAnalyzer baslatildi - Haber + Sosyal + Contrarian aktif")
+        self.last_fetch = {}
+        self.finbert = None
+        self.vader = None
 
-    # ============================================================
-    # FEAR & GREED INDEX (GELİŞTİRİLMİŞ — CONTRARİAN SİNYAL)
-    # ============================================================
-
-    def get_fear_greed_index(self) -> Dict:
-        """
-        Kripto Fear & Greed Index (0-100)
-        CONTRARIAN STRATEJİ:
-          0-15:  Extreme Fear → STRONG_BUY (herkes satarken al!)
-          16-25: Fear → BUY (korku = fırsat)
-          26-45: Mild Fear → SLIGHTLY_BULLISH
-          46-55: Neutral
-          56-74: Greed → SLIGHTLY_BEARISH
-          75-85: High Greed → SELL
-          86-100: Extreme Greed → STRONG_SELL (herkes alırken sat!)
-        """
-        if (self.fear_greed_time and
-            (datetime.now() - self.fear_greed_time).total_seconds() < 3600):
-            return self.fear_greed_cache
-
-        try:
-            # Son 7 günlük F&G verisi (trend için)
-            response = requests.get(
-                NEWS_CONFIG["fear_greed_url"],
-                params={"limit": 7},
-                timeout=10
-            )
-            data = response.json()
-
-            if data.get("data"):
-                fg = data["data"][0]
-                value = int(fg["value"])
-
-                # Son 7 gün trendi
-                fg_values = [int(d["value"]) for d in data["data"][:7]]
-                fg_avg_7d = sum(fg_values) / len(fg_values) if fg_values else value
-                fg_trend = value - fg_avg_7d  # Pozitif = iyileşme, negatif = kötüleşme
-
-                result = {
-                    "value": value,
-                    "label": fg["value_classification"],
-                    "timestamp": fg.get("timestamp", ""),
-                    "avg_7d": round(fg_avg_7d, 1),
-                    "trend": round(fg_trend, 1),
-                }
-
-                # GELİŞTİRİLMİŞ CONTRARIAN SİNYAL
-                if value <= 15:
-                    result["signal"] = "STRONG_BUY"
-                    result["score"] = 40  # Extreme Fear = büyük alım fırsatı
-                elif value <= 25:
-                    result["signal"] = "BUY"
-                    result["score"] = 25
-                elif value <= 45:
-                    result["signal"] = "SLIGHTLY_BULLISH"
-                    result["score"] = 10
-                elif value <= 55:
-                    result["signal"] = "NEUTRAL"
-                    result["score"] = 0
-                elif value <= 74:
-                    result["signal"] = "SLIGHTLY_BEARISH"
-                    result["score"] = -10
-                elif value <= 85:
-                    result["signal"] = "SELL"
-                    result["score"] = -25
-                else:
-                    result["signal"] = "STRONG_SELL"
-                    result["score"] = -40
-
-                # Trend bonusu: F&G iyileşiyorsa ekstra puan
-                if fg_trend > 10:
-                    result["score"] += 5
-                    result["trend_signal"] = "IMPROVING"
-                elif fg_trend < -10:
-                    result["score"] -= 5
-                    result["trend_signal"] = "WORSENING"
-                else:
-                    result["trend_signal"] = "STABLE"
-
-                self.fear_greed_cache = result
-                self.fear_greed_time = datetime.now()
-
-                logger.info(
-                    f"  Fear&Greed: {value} ({result['label']}) "
-                    f"7d_avg:{fg_avg_7d:.0f} trend:{fg_trend:+.0f} "
-                    f"-> {result['signal']} (skor:{result['score']})"
-                )
-                return result
-
-        except Exception as e:
-            logger.error(f"Fear&Greed alinamadi: {e}")
-
-        return {"value": 50, "label": "Neutral", "signal": "NEUTRAL", "score": 0,
-                "avg_7d": 50, "trend": 0, "trend_signal": "STABLE"}
-
-    # ============================================================
-    # HABER ÇEKME
-    # ============================================================
-
-    def fetch_news(self) -> List[Dict]:
-        """CryptoPanic + CoinGecko'dan haber çek."""
-        if (self.last_fetch_time and
-            (datetime.now() - self.last_fetch_time).total_seconds()
-            < NEWS_CONFIG["news_cache_minutes"] * 60):
-            return self.cache.get("news", [])
-
-        news_items = []
-
-        # Kaynak 1: CryptoPanic
-        try:
-            response = requests.get(
-                NEWS_CONFIG["cryptopanic_url"],
-                params={"auth_token": "free", "public": "true"},
-                timeout=10
-            )
-            if response.status_code == 200:
-                data = response.json()
-                for item in data.get("results", [])[:20]:
-                    published = item.get("published_at", "")
-                    news_items.append({
-                        "title": item.get("title", ""),
-                        "source": item.get("source", {}).get("title", "unknown"),
-                        "url": item.get("url", ""),
-                        "published": published,
-                        "published_dt": self._parse_datetime(published),
-                        "currencies": [
-                            c.get("code", "") for c in item.get("currencies", [])
-                        ] if item.get("currencies") else [],
-                        "votes": item.get("votes", {}),
-                    })
-        except Exception as e:
-            logger.debug(f"CryptoPanic haberleri alinamadi: {e}")
-
-        # Kaynak 2: CoinGecko Trending
-        try:
-            cg_response = requests.get(
-                "https://api.coingecko.com/api/v3/search/trending",
-                timeout=10
-            )
-            if cg_response.status_code == 200:
-                trending = cg_response.json()
-                for coin in trending.get("coins", [])[:7]:
-                    item = coin.get("item", {})
-                    news_items.append({
-                        "title": f"Trending: {item.get('name', '')} ({item.get('symbol', '')}) - "
-                                 f"Rank #{item.get('market_cap_rank', 'N/A')}",
-                        "source": "CoinGecko Trending",
-                        "url": "",
-                        "published": datetime.now().isoformat(),
-                        "published_dt": datetime.now(),
-                        "currencies": [item.get("symbol", "").upper()],
-                        "votes": {},
-                    })
-        except Exception as e:
-            logger.debug(f"CoinGecko trending alinamadi: {e}")
-
-        self.cache["news"] = news_items
-        self.last_fetch_time = datetime.now()
-
-        if news_items:
-            logger.info(f"  Haberler: {len(news_items)} haber alindi")
-
-        return news_items
-
-    # ============================================================
-    # DUYGU ANALİZİ (ZAMAN AĞIRLIKLI)
-    # ============================================================
-
-    def analyze_sentiment(self, text: str, published_dt: Optional[datetime] = None) -> Dict:
-        """
-        Zaman ağırlıklı duygu analizi.
-        Taze haberler daha etkili, eski haberler azalan ağırlığa sahip.
-        """
-        text_lower = text.lower()
-        score = 0
-        matched_keywords = []
-        is_high_impact = False
-
-        # Yüksek etki kontrolü
-        for keyword in NEWS_CONFIG["high_impact_keywords"]:
-            if keyword in text_lower:
-                is_high_impact = True
-                break
-
-        # Pozitif kelime kontrolü
-        for keyword in NEWS_CONFIG["bullish_keywords"]:
-            if keyword in text_lower:
-                score += 15
-                matched_keywords.append(f"+{keyword}")
-
-        # Negatif kelime kontrolü
-        for keyword in NEWS_CONFIG["bearish_keywords"]:
-            if keyword in text_lower:
-                score -= 15
-                matched_keywords.append(f"-{keyword}")
-
-        # Yüksek etkili haberlerde skoru 2x
-        if is_high_impact and score != 0:
-            score *= 2
-
-        # ZAMAN AĞIRLIĞI (YENİ)
-        time_weight = 1.0
-        if published_dt:
+        # FinBERT veya VADER başlat
+        if FINBERT_AVAILABLE:
             try:
-                age_hours = (datetime.now() - published_dt).total_seconds() / 3600
-                if age_hours <= 1:
-                    time_weight = NEWS_CONFIG["time_decay"]["1h"]
-                elif age_hours <= 4:
-                    time_weight = NEWS_CONFIG["time_decay"]["4h"]
-                else:
-                    time_weight = NEWS_CONFIG["time_decay"]["24h"]
+                self.finbert = FinBERTAnalyzer()
+                logger.info("StockNewsAnalyzer: FinBERT aktif")
             except Exception:
                 pass
 
-        score = int(score * time_weight)
-        score = max(-100, min(100, score))
+        if self.finbert is None and VADER_AVAILABLE:
+            self.vader = SentimentIntensityAnalyzer()
+            logger.info("StockNewsAnalyzer: VADER fallback aktif")
 
-        if score > 20:
-            sentiment = "BULLISH"
-        elif score > 0:
-            sentiment = "SLIGHTLY_BULLISH"
-        elif score < -20:
-            sentiment = "BEARISH"
-        elif score < 0:
-            sentiment = "SLIGHTLY_BEARISH"
+        sources = []
+        if self.alpha_vantage_key:
+            sources.append("Alpha Vantage")
+        if self.marketaux_token:
+            sources.append("Marketaux")
+        logger.info(f"StockNewsAnalyzer baslatildi — Kaynaklar: {', '.join(sources) or 'YOK'}")
+
+    # ============================================================
+    # 1. ANA ANALİZ FONKSİYONU
+    # ============================================================
+
+    def analyze_stock_news(self, symbol: str) -> Dict:
+        """
+        Hisse bazlı haber analizi.
+        
+        Returns:
+            {
+                'news_score': int (-100 ile +100),
+                'signal': 'BULLISH' | 'BEARISH' | 'NEUTRAL',
+                'article_count': int,
+                'top_headlines': list,
+                'geopolitical_risk': str,
+            }
+        """
+        cache_key = f"news_{symbol}"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        articles = []
+
+        # Alpha Vantage'den haber çek
+        if self.alpha_vantage_key:
+            av_articles = self._fetch_alpha_vantage_news(symbol)
+            articles.extend(av_articles)
+
+        # Marketaux'den haber çek
+        if self.marketaux_token:
+            mx_articles = self._fetch_marketaux_news(symbol)
+            articles.extend(mx_articles)
+
+        # Analiz et
+        if not articles:
+            result = {
+                "news_score": 0,
+                "signal": "NEUTRAL",
+                "article_count": 0,
+                "top_headlines": [],
+                "geopolitical_risk": "UNKNOWN",
+            }
         else:
-            sentiment = "NEUTRAL"
+            score, sentiments = self._analyze_articles(articles, symbol)
+            geo_risk = self._check_geopolitical_risk(articles)
 
-        return {
-            "score": score,
-            "sentiment": sentiment,
-            "keywords": matched_keywords,
-            "high_impact": is_high_impact,
-            "time_weight": time_weight,
-        }
-
-    # ============================================================
-    # MULTI-TIMEFRAME SENTIMENT (YENİ)
-    # ============================================================
-
-    def get_multi_timeframe_sentiment(self, news: List[Dict], coin_keywords: List[str]) -> Dict:
-        """
-        Farklı zaman dilimlerinde sentiment analizi.
-        Kısa vade sentiment uzun vadeden farklıysa → momentum değişimi.
-        """
-        now = datetime.now()
-        sentiments = {"1h": [], "4h": [], "24h": []}
-
-        for item in news:
-            title = item["title"].lower()
-
-            # Genel piyasa haberi mi yoksa coin-spesifik mi?
-            is_relevant = any(kw in title for kw in coin_keywords) or not coin_keywords
-
-            if not is_relevant:
-                continue
-
-            published_dt = item.get("published_dt")
-            if not published_dt:
-                continue
-
-            try:
-                age_hours = (now - published_dt).total_seconds() / 3600
-            except Exception:
-                continue
-
-            sent = self.analyze_sentiment(item["title"], published_dt)
-
-            if age_hours <= 1:
-                sentiments["1h"].append(sent["score"])
-            if age_hours <= 4:
-                sentiments["4h"].append(sent["score"])
-            if age_hours <= 24:
-                sentiments["24h"].append(sent["score"])
-
-        # Ortalama hesapla
-        result = {}
-        for tf, scores in sentiments.items():
-            if scores:
-                avg = sum(scores) / len(scores)
-                result[f"sentiment_{tf}"] = round(avg, 1)
-                result[f"count_{tf}"] = len(scores)
+            if score >= 15:
+                signal = "BULLISH"
+            elif score <= -15:
+                signal = "BEARISH"
             else:
-                result[f"sentiment_{tf}"] = 0
-                result[f"count_{tf}"] = 0
+                signal = "NEUTRAL"
 
-        # Momentum değişimi tespiti
-        s1h = result.get("sentiment_1h", 0)
-        s4h = result.get("sentiment_4h", 0)
-        s24h = result.get("sentiment_24h", 0)
+            result = {
+                "news_score": score,
+                "signal": signal,
+                "article_count": len(articles),
+                "top_headlines": [a.get("title", "")[:80] for a in articles[:3]],
+                "geopolitical_risk": geo_risk,
+                "sentiments": sentiments,
+            }
 
-        if s1h > s4h + 10 and s1h > 0:
-            result["momentum_shift"] = "IMPROVING"
-            result["shift_score"] = 10
-        elif s1h < s4h - 10 and s1h < 0:
-            result["momentum_shift"] = "DETERIORATING"
-            result["shift_score"] = -10
-        else:
-            result["momentum_shift"] = "STABLE"
-            result["shift_score"] = 0
+        self.cache[cache_key] = result
+        self.last_fetch[cache_key] = datetime.now()
 
+        logger.info(
+            f"  Haber {symbol}: {result['article_count']} haber, "
+            f"skor={result['news_score']}, sinyal={result['signal']}, "
+            f"jeopolitik={result['geopolitical_risk']}"
+        )
         return result
 
     # ============================================================
-    # COİN-SPESİFİK ANALİZ (GELİŞTİRİLMİŞ)
+    # 2. ALPHA VANTAGE NEWS
     # ============================================================
 
-    def get_coin_sentiment(self, symbol: str) -> Dict:
-        """Gelişmiş coin sentiment analizi — multi-timeframe + contrarian."""
-        coin = symbol.replace("/USD", "").replace("USD", "")
+    def _fetch_alpha_vantage_news(self, symbol: str) -> List[Dict]:
+        """Alpha Vantage News Sentiment API."""
+        try:
+            url = "https://www.alphavantage.co/query"
+            params = {
+                "function": "NEWS_SENTIMENT",
+                "tickers": symbol,
+                "limit": 10,
+                "apikey": self.alpha_vantage_key,
+            }
+            response = requests.get(url, params=params, timeout=15)
+            time.sleep(NEWS_CONFIG["alpha_vantage_cooldown"])
 
-        # Fear & Greed (contrarian)
-        fg = self.get_fear_greed_index()
+            if response.status_code == 200:
+                data = response.json()
+                feed = data.get("feed", [])
+                articles = []
+                for item in feed[:10]:
+                    articles.append({
+                        "title": item.get("title", ""),
+                        "summary": item.get("summary", ""),
+                        "source": item.get("source", ""),
+                        "published": item.get("time_published", ""),
+                        "sentiment_score": float(item.get("overall_sentiment_score", 0)),
+                        "sentiment_label": item.get("overall_sentiment_label", "Neutral"),
+                        "api": "alpha_vantage",
+                    })
+                return articles
+        except Exception as e:
+            logger.debug(f"Alpha Vantage haber hatası {symbol}: {e}")
+        return []
 
-        # Haberler
-        news = self.fetch_news()
+    # ============================================================
+    # 3. MARKETAUX NEWS
+    # ============================================================
 
-        # Coin ile ilgili haberleri filtrele
-        coin_keywords = NEWS_CONFIG["coin_keywords"].get(coin, [coin.lower()])
-        relevant_news = []
+    def _fetch_marketaux_news(self, symbol: str) -> List[Dict]:
+        """Marketaux News API."""
+        try:
+            url = "https://api.marketaux.com/v1/news/all"
+            params = {
+                "symbols": symbol,
+                "filter_entities": "true",
+                "language": "en",
+                "limit": 10,
+                "api_token": self.marketaux_token,
+            }
+            response = requests.get(url, params=params, timeout=15)
+            time.sleep(NEWS_CONFIG["marketaux_cooldown"])
+
+            if response.status_code == 200:
+                data = response.json()
+                articles = []
+                for item in data.get("data", [])[:10]:
+                    articles.append({
+                        "title": item.get("title", ""),
+                        "summary": item.get("description", ""),
+                        "source": item.get("source", ""),
+                        "published": item.get("published_at", ""),
+                        "sentiment_score": 0,  # Kendi analiz edeceğiz
+                        "api": "marketaux",
+                    })
+                return articles
+        except Exception as e:
+            logger.debug(f"Marketaux haber hatası {symbol}: {e}")
+        return []
+
+    # ============================================================
+    # 4. DUYGU ANALİZİ
+    # ============================================================
+
+    def _analyze_articles(self, articles: List[Dict], symbol: str) -> tuple:
+        """Haber duygu analizi — FinBERT/VADER + keyword."""
         total_score = 0
+        sentiments = []
 
-        for item in news:
-            title = item["title"].lower()
-            currencies = [c.upper() for c in item.get("currencies", [])]
+        for article in articles:
+            text = f"{article.get('title', '')} {article.get('summary', '')}"
+            if not text.strip():
+                continue
 
-            is_relevant = (
-                coin in currencies or
-                any(kw in title for kw in coin_keywords)
+            # API'den gelen sentiment skoru (Alpha Vantage)
+            api_score = article.get("sentiment_score", 0)
+
+            # Keyword analizi
+            keyword_score = self._keyword_score(text)
+
+            # NLP analizi (FinBERT veya VADER)
+            nlp_score = 0
+            if self.finbert:
+                try:
+                    result = self.finbert.analyze(text[:512])
+                    if result["label"] == "positive":
+                        nlp_score = result["score"] * 30
+                    elif result["label"] == "negative":
+                        nlp_score = -result["score"] * 30
+                except Exception:
+                    pass
+            elif self.vader:
+                scores = self.vader.polarity_scores(text)
+                nlp_score = scores["compound"] * 25
+
+            # Birleşik skor (ağırlıklı)
+            article_score = int(
+                api_score * 20 * 0.3 +    # API skoru %30
+                keyword_score * 0.3 +       # Keyword %30
+                nlp_score * 0.4             # NLP %40
             )
 
-            if is_relevant:
-                sentiment = self.analyze_sentiment(
-                    item["title"],
-                    item.get("published_dt")
-                )
-                relevant_news.append({
-                    "title": item["title"][:80],
-                    "source": item["source"],
-                    "sentiment": sentiment["sentiment"],
-                    "score": sentiment["score"],
-                    "time_weight": sentiment["time_weight"],
-                })
-                total_score += sentiment["score"]
+            # Zaman ağırlığı (yeni haberler daha önemli)
+            time_weight = self._get_time_weight(article.get("published", ""))
+            article_score = int(article_score * time_weight)
 
-        # Genel piyasa haberleri
-        general_score = 0
-        for item in news[:10]:
-            sentiment = self.analyze_sentiment(item["title"], item.get("published_dt"))
-            general_score += sentiment["score"]
-        general_score = general_score // max(len(news[:10]), 1)
+            total_score += article_score
+            sentiments.append({
+                "title": article.get("title", "")[:60],
+                "score": article_score,
+                "source": article.get("api", "unknown"),
+            })
 
-        # Multi-timeframe sentiment (YENİ)
-        mt_sentiment = self.get_multi_timeframe_sentiment(news, coin_keywords)
+        # Normalize (-100 ile +100 arası)
+        if len(articles) > 0:
+            total_score = max(min(total_score, 100), -100)
 
-        # Sosyal medya analizi
+        return total_score, sentiments
+
+    def _keyword_score(self, text: str) -> float:
+        """Anahtar kelime bazlı skor."""
+        text_lower = text.lower()
+        score = 0
+
+        for keyword in NEWS_CONFIG["bullish_keywords"]:
+            if keyword in text_lower:
+                score += 10
+        for keyword in NEWS_CONFIG["bearish_keywords"]:
+            if keyword in text_lower:
+                score -= 10
+
+        return max(min(score, 50), -50)
+
+    def _get_time_weight(self, published: str) -> float:
+        """Yeni haberler daha ağırlıklı."""
         try:
-            social_data = self.social.get_social_score(symbol)
-            social_score = social_data["social_score"]
-        except Exception as e:
-            logger.debug(f"Sosyal analiz hatasi: {e}")
-            social_data = {"social_score": 0, "social_signal": "NEUTRAL"}
-            social_score = 0
+            if not published:
+                return 0.5
+            # Çeşitli format desteği
+            for fmt in ["%Y%m%dT%H%M%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]:
+                try:
+                    pub_dt = datetime.strptime(published[:19], fmt)
+                    hours_ago = (datetime.now() - pub_dt).total_seconds() / 3600
+                    if hours_ago < 1:
+                        return 1.0
+                    elif hours_ago < 6:
+                        return 0.8
+                    elif hours_ago < 24:
+                        return 0.5
+                    else:
+                        return 0.3
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+        return 0.5
 
-        # GELİŞTİRİLMİŞ TOPLAM SKOR
-        # = Coin haberler %30 + Sosyal medya %25 + Genel piyasa %10
-        # + F&G Contrarian %20 + Multi-timeframe momentum %15
-        if relevant_news:
-            coin_avg = total_score // len(relevant_news)
-        else:
-            coin_avg = 0
+    # ============================================================
+    # 5. JEOPOLİTİK RİSK TAKİBİ
+    # ============================================================
 
-        mt_shift_score = mt_sentiment.get("shift_score", 0)
+    def _check_geopolitical_risk(self, articles: List[Dict]) -> str:
+        """
+        Haberlerde jeopolitik risk var mı?
+        Hürmüz Boğazı, petrol krizi, savaş vs.
+        """
+        all_text = " ".join(
+            f"{a.get('title', '')} {a.get('summary', '')}" for a in articles
+        ).lower()
 
-        final_score = int(
-            coin_avg * 0.30 +
-            social_score * 0.25 +
-            general_score * 0.10 +
-            fg["score"] * 0.20 +
-            mt_shift_score * 0.15
+        risk_count = 0
+        for keyword in GEOPOLITICAL_KEYWORDS["bearish"]:
+            if keyword in all_text:
+                risk_count += 1
+
+        safe_count = 0
+        for keyword in GEOPOLITICAL_KEYWORDS["bullish"]:
+            if keyword in all_text:
+                safe_count += 1
+
+        if risk_count >= 3:
+            return "HIGH"
+        elif risk_count >= 1:
+            return "ELEVATED"
+        elif safe_count >= 2:
+            return "LOW"
+        return "NORMAL"
+
+    def get_market_sentiment(self) -> Dict:
+        """
+        Genel piyasa duyarlılığı — SPY/QQQ haberleri + Fear & Greed.
+        """
+        spy_news = self.analyze_stock_news("SPY")
+        qqq_news = self.analyze_stock_news("QQQ")
+
+        # CNN Fear & Greed Index (ücretsiz endpoint)
+        fear_greed = self._get_fear_greed_index()
+
+        combined_score = int(
+            spy_news["news_score"] * 0.4 +
+            qqq_news["news_score"] * 0.3 +
+            fear_greed.get("score", 50) * 0.3 - 15  # normalize (0-100 → -15 ile +15)
         )
 
-        # Sinyal
-        if final_score >= 30:
-            signal = "STRONG_BUY"
-        elif final_score >= 10:
-            signal = "BUY"
-        elif final_score <= -30:
-            signal = "STRONG_SELL"
-        elif final_score <= -10:
-            signal = "SELL"
-        else:
-            signal = "NEUTRAL"
-
-        result = {
-            "coin": coin,
-            "news_score": final_score,
-            "news_signal": signal,
-            "fear_greed": fg["value"],
-            "fear_greed_label": fg["label"],
-            "fg_trend": fg.get("trend", 0),
-            "fg_contrarian_score": fg["score"],
-            "relevant_news_count": len(relevant_news),
-            "relevant_news": relevant_news[:5],
-            "general_market_score": general_score,
-            "social_score": social_score,
-            "social_signal": social_data.get("social_signal", "NEUTRAL"),
-            "reddit_posts": social_data.get("reddit_posts", 0),
-            "coingecko_trending": social_data.get("coingecko_trending", False),
-            # Multi-timeframe (YENİ)
-            "sentiment_1h": mt_sentiment.get("sentiment_1h", 0),
-            "sentiment_4h": mt_sentiment.get("sentiment_4h", 0),
-            "sentiment_24h": mt_sentiment.get("sentiment_24h", 0),
-            "momentum_shift": mt_sentiment.get("momentum_shift", "STABLE"),
-        }
-
-        if relevant_news or social_score != 0:
-            logger.info(
-                f"  Analiz {coin}: Haber({len(relevant_news)}) "
-                f"Sosyal(skor:{social_score}) "
-                f"F&G:{fg['value']}({fg.get('trend_signal','?')}) "
-                f"Shift:{mt_sentiment.get('momentum_shift','?')} "
-                f"-> Toplam:{final_score} {signal}"
-            )
-
-        return result
-
-    # ============================================================
-    # TÜM PİYASA ÖZETİ
-    # ============================================================
-
-    def get_market_summary(self) -> Dict:
-        """Genel piyasa duygu durumu özeti."""
-        fg = self.get_fear_greed_index()
-        news = self.fetch_news()
-
-        total_bullish = 0
-        total_bearish = 0
-        total_neutral = 0
-
-        for item in news:
-            sentiment = self.analyze_sentiment(item["title"], item.get("published_dt"))
-            if sentiment["score"] > 0:
-                total_bullish += 1
-            elif sentiment["score"] < 0:
-                total_bearish += 1
-            else:
-                total_neutral += 1
-
-        total = max(len(news), 1)
-
         return {
-            "fear_greed": fg,
-            "news_count": len(news),
-            "bullish_pct": round(total_bullish / total * 100, 1),
-            "bearish_pct": round(total_bearish / total * 100, 1),
-            "neutral_pct": round(total_neutral / total * 100, 1),
-            "overall": "BULLISH" if total_bullish > total_bearish else
-                       "BEARISH" if total_bearish > total_bullish else "NEUTRAL",
+            "market_sentiment": combined_score,
+            "spy_sentiment": spy_news["signal"],
+            "qqq_sentiment": qqq_news["signal"],
+            "fear_greed": fear_greed,
+            "geopolitical_risk": spy_news.get("geopolitical_risk", "UNKNOWN"),
         }
 
+    def _get_fear_greed_index(self) -> Dict:
+        """CNN Fear & Greed Index."""
+        cache_key = "fear_greed"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        try:
+            url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                score = data.get("fear_and_greed", {}).get("score", 50)
+                rating = data.get("fear_and_greed", {}).get("rating", "Neutral")
+                result = {"score": score, "rating": rating}
+                self.cache[cache_key] = result
+                self.last_fetch[cache_key] = datetime.now()
+                return result
+        except Exception as e:
+            logger.debug(f"Fear & Greed hatası: {e}")
+        return {"score": 50, "rating": "Neutral"}
+
     # ============================================================
-    # YARDIMCI
+    # CACHE
     # ============================================================
 
-    def _parse_datetime(self, dt_string: str) -> Optional[datetime]:
-        """ISO datetime string'i parse et."""
-        if not dt_string:
-            return None
-        try:
-            # ISO format: 2026-03-19T06:30:00Z
-            dt_string = dt_string.replace("Z", "+00:00")
-            return datetime.fromisoformat(dt_string.replace("+00:00", ""))
-        except Exception:
-            return None
+    def _is_cached(self, key: str) -> bool:
+        if key not in self.cache or key not in self.last_fetch:
+            return False
+        elapsed = (datetime.now() - self.last_fetch[key]).total_seconds()
+        return elapsed < NEWS_CONFIG["cache_minutes"] * 60

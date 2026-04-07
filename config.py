@@ -1,5 +1,6 @@
 """
 AI Trading Bot - Configuration
+Hisse senedi odaklı al-sat stratejisi.
 Tüm ayarlar bu dosyada merkezi olarak yönetilir.
 """
 import os
@@ -14,6 +15,10 @@ ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # "paper" veya "live"
 
+# Haber & Veri API'leri
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
+MARKETAUX_TOKEN = os.getenv("MARKETAUX_TOKEN", "")
+
 # Alpaca base URLs
 ALPACA_PAPER_URL = "https://paper-api.alpaca.markets"
 ALPACA_LIVE_URL = "https://api.alpaca.markets"
@@ -22,55 +27,104 @@ def get_base_url():
     return ALPACA_PAPER_URL if TRADING_MODE == "paper" else ALPACA_LIVE_URL
 
 # ============================================================
+# HİSSE TANIMI — STOCK_IDS (tüm modüller buradan import eder)
+# ============================================================
+STOCK_IDS = {
+    # Mega Cap
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft Corp.",
+    "GOOGL": "Alphabet Inc.",
+    "AMZN": "Amazon.com Inc.",
+    "NVDA": "NVIDIA Corp.",
+    "META": "Meta Platforms Inc.",
+    "TSLA": "Tesla Inc.",
+    # Growth
+    "AMD": "Advanced Micro Devices",
+    "SOFI": "SoFi Technologies",
+    "PLTR": "Palantir Technologies",
+    "COIN": "Coinbase Global",
+    "SQ": "Block Inc.",
+    "SHOP": "Shopify Inc.",
+    "CRWD": "CrowdStrike Holdings",
+    # Momentum
+    "RIVN": "Rivian Automotive",
+    "NIO": "NIO Inc.",
+    "LCID": "Lucid Group",
+    "MARA": "Marathon Digital",
+    "RIOT": "Riot Platforms",
+    "SMCI": "Super Micro Computer",
+}
+
+# Hisse arama terimleri (haber & sosyal medya)
+STOCK_SEARCH_TERMS = {
+    "AAPL": ["apple", "iphone", "tim cook", "apple earnings"],
+    "MSFT": ["microsoft", "azure", "satya nadella", "windows", "copilot"],
+    "GOOGL": ["google", "alphabet", "youtube", "gemini ai", "search"],
+    "AMZN": ["amazon", "aws", "prime", "bezos", "jassy"],
+    "NVDA": ["nvidia", "gpu", "jensen huang", "ai chips", "cuda"],
+    "META": ["meta", "facebook", "instagram", "zuckerberg", "metaverse"],
+    "TSLA": ["tesla", "elon musk", "ev", "cybertruck", "autopilot"],
+    "AMD": ["amd", "ryzen", "radeon", "lisa su", "epyc"],
+    "SOFI": ["sofi", "student loans", "fintech", "noto"],
+    "PLTR": ["palantir", "data analytics", "karp", "government contract"],
+    "COIN": ["coinbase", "crypto exchange", "sec coinbase"],
+    "SQ": ["block", "square", "cash app", "dorsey"],
+    "SHOP": ["shopify", "ecommerce", "tobi lutke"],
+    "CRWD": ["crowdstrike", "cybersecurity", "george kurtz"],
+    "RIVN": ["rivian", "electric truck", "r1t", "r1s"],
+    "NIO": ["nio", "chinese ev", "william li"],
+    "LCID": ["lucid", "lucid air", "ev sedan"],
+    "MARA": ["marathon digital", "bitcoin mining"],
+    "RIOT": ["riot platforms", "crypto mining"],
+    "SMCI": ["super micro", "supermicro", "ai server"],
+}
+
+# Jeopolitik anahtar kelimeler (tüm modüller kullanır)
+GEOPOLITICAL_KEYWORDS = {
+    "bearish": [
+        "war escalat", "military strike", "missile", "strait of hormuz",
+        "oil surge", "oil spike", "sanctions", "embargo", "tariff",
+        "nuclear", "invasion", "bombing", "retaliati", "blockade",
+        "supply disruption", "trade war", "iran attack", "china taiwan",
+        "recession", "debt default", "bank failure", "credit crisis",
+    ],
+    "bullish": [
+        "ceasefire", "peace deal", "trade agreement", "sanctions lifted",
+        "rate cut", "stimulus", "infrastructure bill", "oil drop",
+    ],
+}
+
+# ============================================================
 # RİSK YÖNETİMİ AYARLARI
 # ============================================================
 RISK_CONFIG = {
-    "max_risk_per_trade_pct": 0.01,     # Tek işlemde max %1 risk
+    "max_risk_per_trade_pct": 0.02,     # Tek işlemde max %2 risk
     "max_daily_loss_pct": 0.03,          # Günlük max %3 kayıp
-    "max_position_size_pct": 0.20,       # Tek pozisyon max %20 sermaye
-    "max_open_positions": 5,             # Max açık pozisyon sayısı
+    "max_position_size_pct": 0.30,       # Tek pozisyon max %30 sermaye
+    "max_open_positions": 3,             # Max 3 açık pozisyon
     "risk_reward_ratio": 2.0,            # Min risk/ödül oranı (1:2)
-    "trailing_stop_pct": 0.02,           # Trailing stop %2
-    "min_confidence_score": 0.6,         # Min sinyal güven puanı (%60)
+    "trailing_stop_pct": 0.03,           # Trailing stop %3
+    "min_confidence_score": 50,          # Min sinyal güven puanı (%50)
 }
 
 # ============================================================
 # KOMİSYON / FEE AYARLARI
 # ============================================================
 COMMISSION_CONFIG = {
-    # Alpaca (hisse senedi): komisyon yok
-    "stock_commission_per_share": 0.0,    # Alpaca = $0
-    "stock_commission_pct": 0.0,          # Yüzde bazlı komisyon (bazı brokerlar)
-    "stock_min_commission": 0.0,          # Min komisyon/trade
+    # Alpaca hisse senedi: komisyon YOK!
+    "stock_commission_per_share": 0.0,
+    "stock_commission_pct": 0.0,
+    "stock_min_commission": 0.0,
 
-    # Kripto komisyonları
-    "crypto_commission_pct": 0.0025,      # Alpaca kripto = %0.25
-    "crypto_maker_fee_pct": 0.001,        # Maker fee (limit orders) %0.1
-    "crypto_taker_fee_pct": 0.0025,       # Taker fee (market orders) %0.25
+    # Düzenleyici ücretler (çok küçük — sadece satışta)
+    "sec_fee_per_dollar": 0.0000278,
+    "finra_taf_per_share": 0.000166,
 
-    # Düzenleyici ücretler (ABD hisse senedi — çok küçük ama hesaplanmalı)
-    "sec_fee_per_dollar": 0.0000278,      # SEC fee (sadece satışta)
-    "finra_taf_per_share": 0.000166,      # FINRA TAF (sadece satışta, max $8.30)
+    # Slippage tahmini
+    "estimated_slippage_pct": 0.001,
 
-    # Slippage tahmini (fiyat kayması)
-    "estimated_slippage_pct": 0.001,      # Tahmini %0.1 slippage
-
-    # Minimum kâr eşiği: trade'in beklenen kârı, gidiş-dönüş
-    # komisyonu geçemezse işlem yapma
-    "min_profit_after_fees": True,        # Komisyon kontrolü aktif
-}
-
-# ============================================================
-# HİSSE TARAMA (SCANNER) AYARLARI
-# ============================================================
-SCANNER_CONFIG = {
-    "min_price": 2.0,                    # Min hisse fiyatı $2
-    "max_price": 20.0,                   # Max hisse fiyatı $20
-    "min_volume": 500_000,               # Min günlük hacim 500K
-    "min_relative_volume": 1.5,          # Min göreceli hacim 1.5x
-    "min_change_pct": 3.0,               # Min günlük değişim %3
-    "max_float": 50_000_000,             # Max float 50M (opsiyonel)
-    "top_n_results": 10,                 # En iyi N hisse göster
+    # Minimum kâr eşiği
+    "min_profit_after_fees": True,
 }
 
 # ============================================================
@@ -79,8 +133,8 @@ SCANNER_CONFIG = {
 TECHNICAL_CONFIG = {
     # RSI
     "rsi_period": 14,
-    "rsi_oversold": 30,                  # RSI < 30 → aşırı satılmış
-    "rsi_overbought": 70,                # RSI > 70 → aşırı alınmış
+    "rsi_oversold": 30,
+    "rsi_overbought": 70,
     
     # EMA
     "ema_fast": 9,
@@ -98,43 +152,116 @@ TECHNICAL_CONFIG = {
     
     # ATR (stop-loss hesabı için)
     "atr_period": 14,
-    "atr_multiplier": 1.5,               # Stop-loss = fiyat - (ATR * 1.5)
+    "atr_multiplier": 1.5,
     
     # VWAP
-    "vwap_bounce_threshold": 0.005,      # VWAP'tan %0.5 sapma
+    "vwap_bounce_threshold": 0.005,
 }
 
 # ============================================================
-# STRATEJİ AYARLARI
+# STOCK BOT ANA KONFİGÜRASYON
 # ============================================================
-STRATEGY_CONFIG = {
-    "enabled_strategies": [
-        "rsi_ema",
-        "vwap_bounce",
-        "breakout",
-    ],
-    
-    # Strateji ağırlıkları (oylama için)
-    "strategy_weights": {
-        "rsi_ema": 0.35,
-        "vwap_bounce": 0.35,
-        "breakout": 0.30,
+STOCK_CONFIG = {
+    # === HİSSE HAVUZU ===
+    "symbols": list(STOCK_IDS.keys()),
+
+    # === Pozisyon ağırlıkları (tier bazlı) ===
+    "tier_weights": {
+        # Mega cap — %40
+        "AAPL": 0.40, "MSFT": 0.40, "GOOGL": 0.40, "AMZN": 0.40,
+        "NVDA": 0.40, "META": 0.40, "TSLA": 0.35,
+        # Growth — %35
+        "AMD": 0.35, "SOFI": 0.30, "PLTR": 0.30, "COIN": 0.30,
+        "SQ": 0.30, "SHOP": 0.30, "CRWD": 0.30,
+        # Momentum — %25
+        "RIVN": 0.25, "NIO": 0.25, "LCID": 0.25,
+        "MARA": 0.25, "RIOT": 0.25, "SMCI": 0.25,
     },
-    
-    # Minimum onay — en az bu ağırlık toplamında AL sinyali gerekli
-    "min_buy_weight": 0.50,
-    "min_sell_weight": 0.50,
+    "default_tier_weight": 0.20,
+
+    # === RISK YÖNETİMİ ===
+    "max_risk_per_trade_pct": 0.02,
+    "max_position_pct": 0.30,
+    "max_position_usd": 200,               # Küçük hesap: max $200/trade
+    "live_max_position_usd": 200,
+    "max_open_positions": 3,
+    "cash_reserve_pct": 0.15,               # %15 nakit rezerv
+    "equity_floor_pct": 0.85,               # Hesap %85'ine düşerse dur
+
+    # === STOP/PROFIT HEDEFLERİ ===
+    "stop_loss_pct": 0.03,                  # %3 stop-loss
+    "stop_loss_max_pct": 0.05,              # %5 max stop
+    "atr_stop_multiplier": 1.5,
+    "take_profit_pct": 0.06,                # %6 take-profit (2:1 R:R)
+    "trailing_stop_pct": 0.03,              # %3 trailing stop
+    "partial_profit_pct": 0.04,             # %4'de yarısını sat
+
+    # === SINYAL EŞİKLERİ ===
+    "rsi_oversold": 30,
+    "rsi_overbought": 70,
+    "min_volume_ratio": 1.3,
+    "trend_ema_period": 50,
+
+    # === GATE FİLTRELERİ ===
+    "ema200_trend_gate": True,
+    "time_filter_enabled": True,            # Piyasa saatleri kontrolü
+    "earnings_gate_enabled": True,          # Earnings koruma
+    "volatility_filter_enabled": True,
+    "max_atr_pct": 0.05,                    # ATR > %5 ise alım yapma
+
+    # === KAYIP SERİSİ KORUYUCU ===
+    "loss_streak_enabled": True,
+    "loss_streak_warn": 2,                  # 2 ardışık zarar → güven yükselt
+    "loss_streak_halt": 4,                  # 4 ardışık zarar → 1 gün alım yasağı
+    "loss_streak_halt_hours": 24,
+    "loss_streak_elevated_conf": 70,
+
+    # === R:R GATE ===
+    "rr_gate_enabled": True,
+    "min_rr_ratio": 2.0,
+
+    # === MULTI-TIMEFRAME ===
+    "multi_tf_enabled": True,
+
+    # === BREAK-EVEN STOP ===
+    "breakeven_enabled": True,
+    "breakeven_trigger_pct": 0.025,
+    "breakeven_offset_pct": 0.003,
+
+    # === PDT AYARLARI ===
+    "max_day_trades_per_week": 2,
+    "pdt_equity_threshold": 25000,
+
+    # === ZAMANLAMA ===
+    "scan_interval_seconds": 30,            # Her 30 saniyede tara (hisse daha yavaş)
+    "min_interval_high_conf": 10,           # %65+ güven: 10dk
+    "min_interval_med_conf": 20,            # %55-64 güven: 20dk
+    "min_interval_low_conf": 30,            # %50-54 güven: 30dk
+
+    # === KILL SWITCH ===
+    "max_daily_loss_pct": 0.03,             # %3 günlük max kayıp
+    "max_consecutive_errors": 5,
+
+    # === ZAMANLAMA SABİTLERİ ===
+    "error_retry_sleep": 30,
+    "heartbeat_interval": 30,
+    "status_report_interval": 5,
+    "min_position_close_usd": 5.0,
+
+    # === KOMISYON (HİSSE = $0) ===
+    "commission_pct": 0.0,
+    "min_trade_value": 10.0,
 }
 
 # ============================================================
 # ZAMANLAMA AYARLARI (US Eastern Time)
 # ============================================================
 SCHEDULE_CONFIG = {
-    "market_open": "09:30",              # ET
-    "market_close": "16:00",             # ET
-    "scan_interval_seconds": 60,          # Her 60 saniyede tara
-    "pre_market_scan": "09:00",          # Pre-market tarama başla
-    "stop_trading_time": "15:45",        # Son 15 dakikada işlem yapma
+    "market_open": "09:30",
+    "market_close": "16:00",
+    "scan_interval_seconds": 30,
+    "pre_market_scan": "09:00",
+    "stop_trading_time": "15:45",
     "timezone": "US/Eastern",
 }
 
@@ -145,25 +272,16 @@ LOG_CONFIG = {
     "log_dir": "logs",
     "log_level": "INFO",
     "trade_history_file": "trade_history.json",
-    "max_log_files": 30,                  # Max 30 günlük log
-}
-
-# ============================================================
-# DASHBOARD AYARLARI
-# ============================================================
-DASHBOARD_CONFIG = {
-    "refresh_interval_seconds": 5,
-    "port": 8501,
-    "theme": "dark",
+    "max_log_files": 30,
 }
 
 # ============================================================
 # KILL SWITCH (ACİL DURUM) AYARLARI
 # ============================================================
 KILL_SWITCH_CONFIG = {
-    "max_consecutive_api_errors": 3,     # 3 ardışık hata → tüm pozisyonları kapat
-    "max_daily_loss_pct": 0.05,          # Günlük %5 kayıp → acil kapanış
-    "auto_close_positions": True,        # Kill'de pozisyonları otomatik kapat
+    "max_consecutive_api_errors": 3,
+    "max_daily_loss_pct": 0.05,
+    "auto_close_positions": True,
     "kill_state_file": "kill_switch.json",
 }
 
@@ -171,83 +289,17 @@ KILL_SWITCH_CONFIG = {
 # EMİR TİPİ AYARLARI
 # ============================================================
 ORDER_CONFIG = {
-    # Market order yerine Limit order tercih et (slippage koruması)
     "prefer_limit_orders": True,
-    "limit_order_slippage_pct": 0.005,   # Limit fiyatı = fiyat × (1 + 0.5%)
-
-    # Minimum hacim kontrolü (sığ hisselerde market order tehlikeli)
+    "limit_order_slippage_pct": 0.005,
     "min_volume_for_market_order": 100_000,
-
-    # Order timeout (dakika) — limit order dolmazsa iptal et
     "limit_order_timeout_minutes": 5,
 }
 
 # ============================================================
-# VERİ KALİTESİ UYARILARI
+# VERİ KALİTESİ
 # ============================================================
-# ⚠️ ÖNEMLİ: Günlük al-sat (day trading/scalping) için GERÇEK ZAMANLI
-# veri gereklidir. Ücretsiz API'lerin çoğu 15 DAKİKA GECİKMELİ veri verir!
-#
-# Çözümler:
-# - Alpaca: Paper trading'de gerçek zamanlı veri verir
-# - Alpaca Pro: Canlıda SIP (gerçek zamanlı NBBO) verisi
-# - Polygon.io: Starter planı ($29/ay) ile gerçek zamanlı veri
-# - "Non-Professional" veri sözleşmesi imzalamayı unutmayın
-#
-# Bot canlıya geçmeden ÖNCE veri gecikmesini mutlaka test edin!
 DATA_CONFIG = {
-    "require_realtime_data": True,       # Gerçek zamanlı veri zorunlu mu?
-    "max_acceptable_delay_seconds": 5,   # Max kabul edilebilir gecikme
-    "warn_on_delayed_data": True,        # Gecikmeli veri uyarısı
-}
-
-# ============================================================
-# MERKEZİ COİN TANIMLARI (TÜM MODÜLLER BURADAN IMPORT EDER)
-# ============================================================
-# Alpaca symbol -> CoinGecko ID mapping
-COIN_IDS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "SOL": "solana",
-    "XRP": "ripple",
-    "DOGE": "dogecoin",
-    "SHIB": "shiba-inu",
-    "PEPE": "pepe",
-    "LINK": "chainlink",
-    "AVAX": "avalanche-2",
-    "ADA": "cardano",
-    "DOT": "polkadot",
-    "LTC": "litecoin",
-    "BONK": "bonk",
-    "ARB": "arbitrum",
-    "UNI": "uniswap",
-    "AAVE": "aave",
-    "RENDER": "render-token",
-    "ONDO": "ondo-finance",
-    "TRUMP": "trump-coin",
-    "WIF": "dogwifhat",
-}
-
-# Coin anahtar kelimeleri (haber & sosyal medya arama)
-COIN_SEARCH_TERMS = {
-    "BTC": ["bitcoin", "btc", "satoshi"],
-    "ETH": ["ethereum", "eth", "vitalik"],
-    "SOL": ["solana", "sol"],
-    "XRP": ["ripple", "xrp", "sec lawsuit"],
-    "DOGE": ["dogecoin", "doge", "elon", "musk"],
-    "SHIB": ["shiba inu", "shib", "shibarium"],
-    "PEPE": ["pepe", "memecoin"],
-    "LINK": ["chainlink", "link", "oracle"],
-    "AVAX": ["avalanche", "avax"],
-    "ADA": ["cardano", "ada"],
-    "DOT": ["polkadot", "dot"],
-    "LTC": ["litecoin"],
-    "BONK": ["bonk"],
-    "ARB": ["arbitrum"],
-    "RENDER": ["render token"],
-    "TRUMP": ["trump coin", "trump crypto"],
-    "ONDO": ["ondo finance"],
-    "WIF": ["dogwifhat", "wif"],
-    "UNI": ["uniswap"],
-    "AAVE": ["aave"],
+    "require_realtime_data": True,
+    "max_acceptable_delay_seconds": 5,
+    "warn_on_delayed_data": True,
 }
