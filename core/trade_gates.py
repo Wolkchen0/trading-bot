@@ -64,7 +64,7 @@ class TradeGates:
 
         # 5. Hisse Filtresi (ardışık zarar)
         if config.get("coin_filter_enabled", True):
-            losses = getattr(self.bot, '_coin_consecutive_losses', {}).get(symbol, 0)
+            losses = getattr(self.bot, '_symbol_consecutive_losses', {}).get(symbol, 0)
             max_losses = config.get("coin_max_consecutive_losses", 3)
             if losses >= max_losses:
                 logger.info(f"  {symbol} HİSSE FİLTRE: {losses} ardisik zarar, devre disi")

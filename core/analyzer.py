@@ -296,41 +296,14 @@ class TechnicalAnalyzer:
         }
 
     def analyze_with_news(self, df, symbol: str, config: Dict) -> Dict:
-        """Teknik analiz + haber + desen + makro + ML + fundamental + ESG + korelasyon + agent."""
+        """Teknik analiz + haber + makro + fundamental + sosyal medya + agent."""
         bot = self.bot
         tech = self.analyze(df, config)
 
-        # === DESEN TANIMA ===
-        try:
-            pattern_data = bot.patterns.analyze_all(df)
-            pattern_score = pattern_data["pattern_score"]
-            pattern_signal = pattern_data["pattern_signal"]
-
-            if pattern_score > 0:
-                tech["confidence"] = min(tech["confidence"] + pattern_score, 100)
-            elif pattern_score < 0:
-                if tech["signal"] == "BUY":
-                    tech["confidence"] = max(tech["confidence"] + pattern_score, 0)
-                    if tech["confidence"] < 50:
-                        tech["signal"] = "HOLD"
-                elif tech["signal"] == "HOLD" and pattern_score <= -20:
-                    tech["signal"] = "SELL"
-                    tech["confidence"] = max(abs(pattern_score), 55)
-
-            tech["reasons"].extend(pattern_data["reasons"])
-            tech["pattern_score"] = pattern_score
-            tech["pattern_signal"] = pattern_signal
-
-        except Exception as e:
-            logger.debug(f"Desen analizi hatasi {symbol}: {e}")
-            tech["pattern_score"] = 0
-            tech["pattern_signal"] = "NEUTRAL"
-
         # === HABER ANALİZİ ===
         try:
-            news_data = bot.news.get_coin_sentiment(symbol)
-            news_score = news_data["news_score"]
-            news_signal = news_data["news_signal"]
+            news_data = bot.news_analyzer.analyze_stock_news(symbol)
+            news_score = news_data.get("news_score", 0)
 
             if tech["signal"] == "BUY":
                 if news_score >= 10:
@@ -338,12 +311,12 @@ class TechnicalAnalyzer:
                     tech["reasons"].append(f"Haber:+{news_score}")
                 elif news_score <= -20:
                     tech["confidence"] = max(tech["confidence"] - 25, 0)
-                    tech["reasons"].append(f"Haber:{news_score} DIKKAT!")
+                    tech["reasons"].append(f"Haber:{news_score} DİKKAT!")
                     if tech["confidence"] < 50:
                         tech["signal"] = "HOLD"
 
             elif tech["signal"] == "HOLD" and news_score >= 30:
-                tech["reasons"].append(f"Haber_guclu:+{news_score}")
+                tech["reasons"].append(f"Haber_güçlü:+{news_score}")
 
             elif tech["signal"] == "HOLD" and news_score <= -30:
                 tech["signal"] = "SELL"
@@ -351,75 +324,19 @@ class TechnicalAnalyzer:
                 tech["reasons"].append(f"HABER_SELL({news_score})")
 
             tech["news_score"] = news_score
-            tech["news_signal"] = news_signal
-            tech["fear_greed"] = news_data["fear_greed"]
-            tech["news_count"] = news_data["relevant_news_count"]
-
-            fg = news_data.get("fear_greed", {})
-            if isinstance(fg, dict) and "value" in fg:
-                bot._last_fg_value = fg["value"]
+            tech["news_signal"] = news_data.get("signal", "NEUTRAL")
+            tech["geopolitical_risk"] = news_data.get("geopolitical_risk", "UNKNOWN")
 
         except Exception as e:
-            logger.debug(f"Haber analizi hatasi {symbol}: {e}")
+            logger.debug(f"Haber analizi hatası {symbol}: {e}")
             tech["news_score"] = 0
             tech["news_signal"] = "NEUTRAL"
 
-        # === MAKRO EKONOMİK VERİ ===
+        # === TEMEL ANALİZ ===
+        fund_score = 0
+        fund_data = {}
         try:
-            if (bot.macro_last_check is None or
-                (datetime.now() - bot.macro_last_check).total_seconds() > 21600):
-                bot.macro_cache = bot.macro.get_macro_score()
-                bot.macro_last_check = datetime.now()
-
-            if bot.macro_cache:
-                macro_score = bot.macro_cache["macro_score"]
-                if tech["signal"] == "BUY" and macro_score <= -10:
-                    tech["confidence"] = max(tech["confidence"] - 10, 0)
-                    tech["reasons"].append(f"Makro:BEARISH({macro_score})")
-                elif tech["signal"] == "BUY" and macro_score >= 10:
-                    tech["confidence"] = min(tech["confidence"] + 10, 100)
-                    tech["reasons"].append(f"Makro:BULLISH({macro_score})")
-                tech["macro_score"] = macro_score
-        except Exception as e:
-            logger.debug(f"Makro veri hatasi: {e}")
-
-        # === ML TAHMİN ===
-        try:
-            ml_result = bot.ml.predict(df, symbol)
-            ml_score = ml_result["score"]
-
-            if ml_score != 0:
-                if tech["signal"] == "BUY" and ml_score > 0:
-                    tech["confidence"] = min(tech["confidence"] + ml_score, 100)
-                    preds = ml_result.get("predictions", {})
-                    pred_1h = preds.get("1h", {}).get("direction", "?")
-                    pred_4h = preds.get("4h", {}).get("direction", "?")
-                    tech["reasons"].append(f"ML:+{ml_score}(1h:{pred_1h},4h:{pred_4h})")
-                elif tech["signal"] == "BUY" and ml_score < -5:
-                    tech["confidence"] = max(tech["confidence"] + ml_score, 0)
-                    tech["reasons"].append(f"ML:{ml_score} DIKKAT!")
-                    if tech["confidence"] < 50:
-                        tech["signal"] = "HOLD"
-
-            tech["ml_score"] = ml_score
-            tech["ml_predictions"] = ml_result.get("predictions", {})
-
-        except Exception as e:
-            logger.debug(f"ML tahmin hatasi {symbol}: {e}")
-            tech["ml_score"] = 0
-
-        # === FUNDAMENTAL ANALİZ ===
-        try:
-            fund_cache_key = symbol
-            last_check = bot.fundamental_last_check.get(fund_cache_key)
-            if (last_check is None or
-                (datetime.now() - last_check).total_seconds() > 900):
-                fund_data = bot.fundamental.get_fundamental_score(symbol)
-                bot.fundamental_cache[fund_cache_key] = fund_data
-                bot.fundamental_last_check[fund_cache_key] = datetime.now()
-            else:
-                fund_data = bot.fundamental_cache.get(fund_cache_key, {})
-
+            fund_data = bot.fundamental_analyzer.analyze_fundamentals(symbol)
             fund_score = fund_data.get("fundamental_score", 0)
 
             if fund_score != 0:
@@ -430,74 +347,61 @@ class TechnicalAnalyzer:
                     tech["confidence"] = max(tech["confidence"] + fund_score, 0)
                     tech["reasons"].append(f"Fund:{fund_score}")
                 elif tech["signal"] == "HOLD" and fund_score >= 15:
-                    tech["reasons"].append(f"Fund_guclu:+{fund_score}")
+                    tech["reasons"].append(f"Fund_güçlü:+{fund_score}")
 
             tech["fundamental_score"] = fund_score
-            tech["fundamental_signal"] = fund_data.get("fundamental_signal", "NEUTRAL")
-            tech["volume_spike"] = fund_data.get("volume_spike", False)
+            tech["fundamental_signal"] = fund_data.get("signal", "NEUTRAL")
 
         except Exception as e:
-            logger.debug(f"Fundamental analiz hatasi {symbol}: {e}")
+            logger.debug(f"Temel analiz hatası {symbol}: {e}")
             tech["fundamental_score"] = 0
             tech["fundamental_signal"] = "NEUTRAL"
 
-        # === ESG ANALİZ ===
+        # === MAKRO EKONOMİK VERİ ===
         try:
-            esg_result = bot.esg.get_esg_adjusted_signal(symbol, tech.get("confidence", 0))
-            tech["esg_total"] = esg_result["esg_total"]
-            tech["esg_risk"] = esg_result["esg_risk"]
-            tech["esg_multiplier"] = esg_result["esg_multiplier"]
+            macro_data = bot.macro_analyzer.get_macro_score()
+            macro_score = macro_data.get("macro_score", 0)
 
-            if esg_result["esg_multiplier"] < 1.0:
-                tech["confidence"] = int(tech["confidence"] * esg_result["esg_multiplier"])
-                tech["reasons"].append(f"ESG:{esg_result['esg_total']}/100")
+            if tech["signal"] == "BUY" and macro_score <= -10:
+                tech["confidence"] = max(tech["confidence"] - 10, 0)
+                tech["reasons"].append(f"Makro:BEARISH({macro_score})")
+            elif tech["signal"] == "BUY" and macro_score >= 10:
+                tech["confidence"] = min(tech["confidence"] + 10, 100)
+                tech["reasons"].append(f"Makro:BULLISH({macro_score})")
+
+            tech["macro_score"] = macro_score
+
         except Exception as e:
-            logger.debug(f"ESG hatasi {symbol}: {e}")
+            logger.debug(f"Makro veri hatası: {e}")
 
-        # === KORELASYON AĞI RİSKİ ===
-        contagion_risk_score = 0
+        # === SOSYAL MEDYA ===
+        social_data = {"social_score": 0}
         try:
-            if (bot.correlation_last_update is None or
-                (datetime.now() - bot.correlation_last_update).total_seconds() > 3600):
-                bot.correlation.update_network()
-                bot.correlation_last_update = datetime.now()
-
-            coin = symbol.replace("/USD", "").replace("USD", "")
-            contagion = bot.correlation.detect_contagion_risk(coin)
-            contagion_risk_score = contagion.get("risk_score", 0)
-
-            if contagion_risk_score > 50:
-                tech["reasons"].append(f"Bulasma_riski:{contagion_risk_score}")
-                if tech["signal"] == "BUY":
-                    tech["confidence"] = max(tech["confidence"] - 10, 0)
-
-            tech["contagion_risk"] = contagion_risk_score
+            social_data = bot.social_analyzer.analyze_social(symbol)
         except Exception as e:
-            logger.debug(f"Korelasyon hatasi {symbol}: {e}")
+            logger.debug(f"Sosyal analiz hatası {symbol}: {e}")
 
         # === MULTI-AGENT KARAR ===
         try:
             risk_data = {
-                "daily_pnl_pct": (bot.daily_pnl / max(bot.equity, 1)) * 100,
+                "daily_pnl_pct": ((bot.equity - bot.initial_equity) / max(bot.initial_equity, 1)) * 100,
                 "open_positions": len(bot.positions),
-                "max_positions": config.get("max_open_positions", 2),
+                "max_positions": config.get("max_open_positions", 3),
                 "atr_pct": (tech.get("atr", 0) / max(tech.get("price", 1), 0.01)) * 100,
-                "contagion_risk_score": contagion_risk_score,
-                "esg_risk_level": tech.get("esg_risk", "MEDIUM"),
                 "equity_floor_hit": not bot.is_paper and bot.equity < bot.equity_floor,
             }
 
             coord_result = bot.coordinator.decide(
                 symbol=symbol,
                 tech_data=tech,
-                fund_data=bot.fundamental_cache.get(symbol, {}),
+                fund_data=fund_data,
                 sent_data={
                     "news_score": tech.get("news_score", 0),
-                    "fear_greed_value": tech.get("fear_greed", {}).get("value", 50) if isinstance(tech.get("fear_greed"), dict) else 50,
-                    "fear_greed_signal": tech.get("news_signal", "NEUTRAL"),
+                    "fear_greed_value": 50,
+                    "fear_greed_signal": "NEUTRAL",
                     "sentiment_label": tech.get("news_signal", "NEUTRAL"),
                 },
-                social_data=tech.get("social_data", {}),
+                social_data=social_data,
                 risk_data=risk_data,
             )
 
@@ -523,6 +427,6 @@ class TechnicalAnalyzer:
             tech["coordinator"] = coord_result
 
         except Exception as e:
-            logger.debug(f"Coordinator hatasi {symbol}: {e}")
+            logger.debug(f"Coordinator hatası {symbol}: {e}")
 
         return tech

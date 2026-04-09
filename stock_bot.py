@@ -10,10 +10,15 @@ Swing trading + sınırlı day trade stratejisi.
   - Earnings takvimi koruması
   - VIX + Petrol + Jeopolitik risk takibi
   - Alpaca Trading API (hisse senedi, komisyon $0)
+  - KillSwitch acil durum koruması
+  - Wash Sale kuralı takibi
+  - Sektör korelasyon koruması
+  - Pozisyon senkronizasyonu (restart-safe)
 """
 import os
 import sys
 import time
+import json
 import logging
 from datetime import datetime, timedelta, date
 from typing import Dict, List, Optional
@@ -38,6 +43,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE,
     get_base_url, STOCK_CONFIG, STOCK_IDS, STOCK_SEARCH_TERMS,
+    SECTOR_MAP,
 )
 
 # Core modüller
@@ -54,7 +60,15 @@ from core.news_analyzer import StockNewsAnalyzer
 from core.social_sentiment import SocialSentimentAnalyzer
 from core.fundamental_analyzer import FundamentalAnalyzer
 from core.macro_data import MacroDataAnalyzer
-from core.finbert_analyzer import FinBERTAnalyzer
+from core.kill_switch import KillSwitch
+from core.compliance import WashSaleTracker
+
+# FinBERT opsiyonel
+try:
+    from core.finbert_analyzer import FinBERTAnalyzer
+    FINBERT_AVAILABLE = True
+except ImportError:
+    FINBERT_AVAILABLE = False
 
 from utils.logger import logger
 
@@ -90,6 +104,8 @@ class StockBot:
       5. After-hours: Sadece olağanüstü fırsatlarda
     """
 
+    POSITIONS_FILE = "bot_positions.json"
+
     def __init__(self):
         config = STOCK_CONFIG
 
@@ -108,6 +124,7 @@ class StockBot:
         account = self.client.get_account()
         equity = float(account.equity)
         self.initial_equity = equity
+        self.equity = equity
 
         # Pozisyon limitleri
         self.max_pos_usd = config.get("live_max_position_usd", 200)
@@ -123,12 +140,13 @@ class StockBot:
         self.sell_cooldown = {}
         self.consecutive_errors = 0
         self._consecutive_losses = 0
-        self._coin_consecutive_losses = {}
+        self._symbol_consecutive_losses = {}  # Hisse bazlı ardışık zarar
         self._daily_buys_count = 0
         self._last_status_time = datetime.min
         self._heartbeat_counter = 0
         self._morning_scan_done = False
         self._morning_scan_date = None
+        self._daily_reset_date = None
 
         # Core modüller
         self.market_hours = MarketHours()
@@ -146,14 +164,31 @@ class StockBot:
         self.fundamental_analyzer = FundamentalAnalyzer()
         self.macro_analyzer = MacroDataAnalyzer()
 
+        # KillSwitch — acil durum koruması
+        self.kill_switch = KillSwitch(
+            max_consecutive_errors=config.get("max_consecutive_errors", 5),
+            max_daily_loss_pct=config.get("max_daily_loss_pct", 0.03),
+        )
+        self.kill_switch.set_callback(self._emergency_close_all)
+
+        # Wash Sale takibi
+        self.wash_sale_tracker = WashSaleTracker()
+
         # FinBERT (opsiyonel)
-        try:
-            self.finbert = FinBERTAnalyzer()
-        except Exception:
+        if FINBERT_AVAILABLE:
+            try:
+                self.finbert = FinBERTAnalyzer()
+            except Exception:
+                self.finbert = None
+        else:
             self.finbert = None
 
         # Teknik analizci
         self.analyzer = TechnicalAnalyzer(self)
+
+        # === POZİSYON SENKRONİZASYONU (restart-safe) ===
+        self._sync_positions_from_alpaca()
+        self._load_position_metadata()
 
         mode_str = "PAPER" if is_paper else "🔴 LIVE"
         logger.info("=" * 60)
@@ -161,7 +196,9 @@ class StockBot:
         logger.info(f"  Mod: {mode_str} | Equity: ${equity:,.2f}")
         logger.info(f"  Max pozisyon: ${self.max_pos_usd} | Floor: ${self.equity_floor:,.2f}")
         logger.info(f"  Hisse havuzu: {len(config['symbols'])} hisse")
+        logger.info(f"  Açık pozisyon: {len(self.positions)}")
         logger.info(f"  PDT: {'EXEMPT' if equity >= 25000 else f'ACTIVE (max 2 DT/hafta)'}")
+        logger.info(f"  KillSwitch: AKTİF | WashSale: AKTİF")
         logger.info("=" * 60)
 
     # ============================================================
@@ -175,6 +212,16 @@ class StockBot:
 
         while True:
             try:
+                # KillSwitch kontrolü
+                if self.kill_switch.is_active:
+                    logger.error(f"🚨 KILL SWITCH AKTİF: {self.kill_switch.kill_reason}")
+                    logger.error("Bot durduruldu. kill_switch.json silinerek restart yapılabilir.")
+                    time.sleep(60)
+                    continue
+
+                # Günlük reset
+                self._daily_reset()
+
                 # Heartbeat
                 self._heartbeat_counter += 1
                 if self._heartbeat_counter % config.get("heartbeat_interval", 30) == 0:
@@ -205,6 +252,17 @@ class StockBot:
 
                 # === PİYASA AÇIK ===
 
+                # Günlük kayıp kontrolü (KillSwitch)
+                try:
+                    account = self.client.get_account()
+                    self.equity = float(account.equity)
+                    if self.kill_switch.check_daily_loss(self.equity, self.initial_equity):
+                        continue  # Kill tetiklendi, döngü başına dön
+                    self.kill_switch.reset_error_count()
+                except Exception as e:
+                    if self.kill_switch.check_api_error(e):
+                        continue
+
                 # Pozisyon yönetimi (her döngüde)
                 self._manage_positions(config)
 
@@ -232,6 +290,14 @@ class StockBot:
                         break
                     if symbol in self.positions:
                         continue
+                    # Sektör korelasyon koruması
+                    if self._sector_limit_reached(symbol, config):
+                        continue
+                    # Wash Sale kontrolü
+                    is_wash, wash_reason = self.wash_sale_tracker.check_wash_sale(symbol)
+                    if is_wash:
+                        logger.info(f"  {symbol} WASH SALE: {wash_reason}")
+                        continue
                     self._analyze_and_trade(symbol, config)
 
                 # Durum raporu
@@ -241,10 +307,13 @@ class StockBot:
 
             except KeyboardInterrupt:
                 logger.info("Bot durduruldu (Ctrl+C)")
+                self._save_position_metadata()
                 break
             except Exception as e:
                 self.consecutive_errors += 1
                 logger.error(f"Ana döngü hatası: {e}")
+                if self.kill_switch.check_api_error(e):
+                    continue
                 if self.consecutive_errors >= config.get("max_consecutive_errors", 5):
                     logger.critical(f"  {self.consecutive_errors} ardışık hata! 5 dakika bekleniyor.")
                     time.sleep(300)
@@ -508,11 +577,10 @@ class StockBot:
 
     def _manage_positions(self, config: Dict):
         """Açık pozisyonları yönet — trailing stop, take profit, break-even."""
-        for symbol in list(self.positions.keys()):
-            try:
-                self.position_manager.manage(symbol, config)
-            except Exception as e:
-                logger.debug(f"  {symbol} pozisyon yönetim hatası: {e}")
+        try:
+            self.position_manager.manage_positions(config)
+        except Exception as e:
+            logger.error(f"  Pozisyon yönetim hatası: {e}")
 
     # ============================================================
     # VERİ ÇEKME
@@ -559,32 +627,68 @@ class StockBot:
         # Yoksa varsayılan havuz
         return STOCK_CONFIG.get("symbols", list(STOCK_IDS.keys()))[:10]
 
+    def _sector_limit_reached(self, symbol: str, config: Dict) -> bool:
+        """Aynı sektörde max pozisyon kontrolü."""
+        max_per_sector = config.get("max_positions_per_sector", 2)
+        symbol_sector = SECTOR_MAP.get(symbol, "Unknown")
+        if symbol_sector == "Unknown":
+            return False
+
+        sector_count = 0
+        for pos_symbol in self.positions:
+            if SECTOR_MAP.get(pos_symbol, "") == symbol_sector:
+                sector_count += 1
+
+        if sector_count >= max_per_sector:
+            logger.debug(
+                f"  {symbol} SEKTÖR LİMİT: {symbol_sector} sektöründe "
+                f"{sector_count}/{max_per_sector} pozisyon dolu"
+            )
+            return True
+        return False
+
     def _log_heartbeat(self):
-        """Heartbeat logu — bot canlı mı kontrolü."""
+        """Gelişmiş heartbeat logu."""
         try:
             account = self.client.get_account()
             equity = float(account.equity)
             cash = float(account.cash)
+            self.equity = equity
             pnl = equity - self.initial_equity
             pnl_pct = (pnl / self.initial_equity * 100) if self.initial_equity > 0 else 0
 
             market_status = self.market_hours.get_market_status()
             pdt_status = self.pdt_tracker.get_status()
 
+            # Pozisyon detayları
+            pos_details = []
+            for sym, data in self.positions.items():
+                entry = data.get("entry_price", 0)
+                pos_details.append(f"{sym}@${entry:.2f}")
+
             logger.info(
-                f"  Durum: ${equity:,.2f} (${pnl:+.2f} / {pnl_pct:+.1f}%) | "
-                f"Pozisyon: {len(self.positions)} | "
-                f"Islem: {len(self.trades_today)} | "
+                f"  💓 ${equity:,.2f} ({pnl:+.2f}/{pnl_pct:+.1f}%) | "
+                f"Cash: ${cash:,.2f} | "
+                f"Poz: {len(self.positions)} [{', '.join(pos_details) or 'yok'}] | "
+                f"İşlem: {len(self.trades_today)} | "
                 f"DT: {pdt_status['week_day_trades']}/{pdt_status['max_day_trades']} | "
-                f"Piyasa: {market_status['status']} | "
-                f"Saat: {market_status.get('time_et', 'N/A')}"
+                f"Zarar serisi: {self._consecutive_losses} | "
+                f"Piyasa: {market_status['status']} {market_status.get('time_et', '')} | "
+                f"Kill: {'⚠️AKTİF' if self.kill_switch.is_active else 'OK'}"
             )
 
             # PDT güncelle
             self.pdt_tracker.update_equity(equity)
 
+            # Periyodik pozisyon sync (her 10 heartbeat'te)
+            if self._heartbeat_counter % 300 == 0:
+                self._sync_positions_from_alpaca()
+
+            # Pozisyon metadata kaydet
+            self._save_position_metadata()
+
         except Exception as e:
-            logger.debug(f"  Heartbeat hatası: {e}")
+            logger.error(f"  Heartbeat hatası: {e}")
 
     def _periodic_status_report(self, config: Dict):
         """Periyodik durum raporu."""
@@ -593,6 +697,112 @@ class StockBot:
             return
         self._last_status_time = datetime.now()
         self._log_heartbeat()
+
+    # ============================================================
+    # POZİSYON SENKRONİZASYONU & PERSISTENCE
+    # ============================================================
+
+    def _sync_positions_from_alpaca(self):
+        """Alpaca'dan açık pozisyonları senkronize et (restart-safe)."""
+        try:
+            alpaca_positions = self.client.get_all_positions()
+            synced = 0
+            for pos in alpaca_positions:
+                symbol = pos.symbol
+                if symbol not in self.positions:
+                    self.positions[symbol] = {
+                        "entry_price": float(pos.avg_entry_price),
+                        "qty": float(pos.qty),
+                        "entry_time": datetime.now().isoformat(),  # Gerçek zaman bilinmiyor
+                        "synced_from_alpaca": True,
+                        "highest_price": float(pos.current_price),
+                    }
+                    synced += 1
+                    logger.info(
+                        f"  🔄 Pozisyon sync: {symbol} | "
+                        f"{float(pos.qty):.4f} @ ${float(pos.avg_entry_price):,.2f} | "
+                        f"P&L: ${float(pos.unrealized_pl):+.2f}"
+                    )
+
+            # Bot'ta var ama Alpaca'da olmayan pozisyonları temizle
+            alpaca_symbols = {pos.symbol for pos in alpaca_positions}
+            for symbol in list(self.positions.keys()):
+                if symbol not in alpaca_symbols:
+                    logger.warning(f"  🗑️ Pozisyon temizlendi (Alpaca'da yok): {symbol}")
+                    self.positions.pop(symbol)
+
+            if synced > 0:
+                logger.info(f"  Toplam {synced} pozisyon Alpaca'dan senkronize edildi")
+
+        except Exception as e:
+            logger.error(f"  Pozisyon sync hatası: {e}")
+
+    def _save_position_metadata(self):
+        """Pozisyon metadata'sını dosyaya kaydet (restart-safe)."""
+        try:
+            data = {
+                "positions": self.positions,
+                "last_trade_time": {k: v.isoformat() for k, v in self.last_trade_time.items()},
+                "consecutive_losses": self._consecutive_losses,
+                "symbol_consecutive_losses": self._symbol_consecutive_losses,
+                "daily_buys_count": self._daily_buys_count,
+                "trades_today": self.trades_today,
+                "last_update": datetime.now().isoformat(),
+            }
+            with open(self.POSITIONS_FILE, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+        except Exception as e:
+            logger.debug(f"  Pozisyon kayıt hatası: {e}")
+
+    def _load_position_metadata(self):
+        """Kaydedilmiş pozisyon metadata'sını yükle."""
+        try:
+            if os.path.exists(self.POSITIONS_FILE):
+                with open(self.POSITIONS_FILE, "r") as f:
+                    data = json.load(f)
+                # Sadece metadata'yı güncelle (pozisyonlar Alpaca'dan geldi)
+                for sym, meta in data.get("positions", {}).items():
+                    if sym in self.positions:
+                        # Mevcut pozisyona ek bilgileri aktar
+                        self.positions[sym].update({
+                            "entry_time": meta.get("entry_time", self.positions[sym].get("entry_time")),
+                            "highest_price": meta.get("highest_price", self.positions[sym].get("highest_price", 0)),
+                            "stop_loss_pct": meta.get("stop_loss_pct"),
+                            "breakeven_set": meta.get("breakeven_set", False),
+                            "partial_sold": meta.get("partial_sold", False),
+                            "synced_from_alpaca": False,
+                        })
+                self._consecutive_losses = data.get("consecutive_losses", 0)
+                self._symbol_consecutive_losses = data.get("symbol_consecutive_losses", {})
+                logger.info(f"  📁 Pozisyon metadata yüklendi ({len(self.positions)} pozisyon)")
+        except Exception as e:
+            logger.debug(f"  Pozisyon metadata yüklenemedi: {e}")
+
+    # ============================================================
+    # GÜNLÜK RESET & ACİL DURUM
+    # ============================================================
+
+    def _daily_reset(self):
+        """Her yeni gün başında değişkenleri sıfırla."""
+        today = date.today()
+        if self._daily_reset_date == today:
+            return
+        self._daily_reset_date = today
+        self.trades_today = []
+        self._daily_buys_count = 0
+        self._morning_scan_done = False
+        self.initial_equity = self.equity  # Günlük PnL için baz
+        logger.info(f"  📆 Günlük reset: {today} | Başlangıç equity: ${self.equity:,.2f}")
+
+    def _emergency_close_all(self, reason: str):
+        """KillSwitch tarafından çağrılır — tüm pozisyonları kapat."""
+        logger.error(f"🚨 ACİL KAPANIŞ: {reason}")
+        try:
+            self.client.close_all_positions(cancel_orders=True)
+            logger.error("  Tüm pozisyonlar kapatıldı, emirler iptal edildi.")
+            self.positions.clear()
+        except Exception as e:
+            logger.error(f"  Acil kapanış hatası: {e}")
 
 
 # ============================================================

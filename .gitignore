@@ -10,4 +10,11 @@ venv/
 trade_history.json
 crypto_trade_history.json
 kill_switch_state.json
+kill_switch.json
+bot_positions.json
+pdt_tracker.json
+wash_sale_tracker.json
+tax_report*.csv
+wash_sales_report.csv
 .vscode/
+.agent/

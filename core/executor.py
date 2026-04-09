@@ -201,8 +201,14 @@ class OrderExecutor:
                         symbol, entry_time, datetime.now().isoformat()
                     )
 
-            # 60 saniyelik cooldown
-            bot.sell_cooldown[symbol] = datetime.now() + timedelta(seconds=60)
+            # Cooldown — swing trade için daha uzun (varsayılan 5dk)
+            cooldown_secs = 300  # default 5 dakika
+            try:
+                from config import STOCK_CONFIG
+                cooldown_secs = STOCK_CONFIG.get("sell_cooldown_seconds", 300)
+            except Exception:
+                pass
+            bot.sell_cooldown[symbol] = datetime.now() + timedelta(seconds=cooldown_secs)
 
             entry = pos.get("entry_price", 0)
             qty = pos.get("qty", 0)
@@ -219,15 +225,20 @@ class OrderExecutor:
             # Kayıp/kazanç serisi takibi
             if "STOP_LOSS" in reason:
                 bot._consecutive_losses = getattr(bot, '_consecutive_losses', 0) + 1
-                coin_losses = getattr(bot, '_coin_consecutive_losses', {})
-                coin_losses[symbol] = coin_losses.get(symbol, 0) + 1
-                bot._coin_consecutive_losses = coin_losses
-                logger.info(f"  Ardisik zarar: {bot._consecutive_losses} | {symbol}: {coin_losses[symbol]}")
+                sym_losses = getattr(bot, '_symbol_consecutive_losses', {})
+                sym_losses[symbol] = sym_losses.get(symbol, 0) + 1
+                bot._symbol_consecutive_losses = sym_losses
+                logger.info(f"  Ardisik zarar: {bot._consecutive_losses} | {symbol}: {sym_losses[symbol]}")
+                # WashSale kaydı
+                if hasattr(bot, 'wash_sale_tracker'):
+                    bot.wash_sale_tracker.record_loss_sale(
+                        symbol, -1.0, datetime.now().isoformat()[:10]
+                    )
             elif "TAKE_PROFIT" in reason or "TRAILING_STOP" in reason:
                 bot._consecutive_losses = 0
-                coin_losses = getattr(bot, '_coin_consecutive_losses', {})
-                coin_losses[symbol] = 0
-                bot._coin_consecutive_losses = coin_losses
+                sym_losses = getattr(bot, '_symbol_consecutive_losses', {})
+                sym_losses[symbol] = 0
+                bot._symbol_consecutive_losses = sym_losses
 
             bot.consecutive_errors = 0
             return True

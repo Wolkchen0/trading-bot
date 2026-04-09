@@ -95,6 +95,26 @@ GEOPOLITICAL_KEYWORDS = {
 }
 
 # ============================================================
+# SEKTÖR HARİTASI (korelasyon koruması için)
+# ============================================================
+SECTOR_MAP = {
+    # Teknoloji
+    "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Technology",
+    "META": "Technology", "NVDA": "Semiconductors", "AMD": "Semiconductors",
+    "SMCI": "Semiconductors", "CRWD": "Cybersecurity",
+    # E-Ticaret / İnternet
+    "AMZN": "E-Commerce", "SHOP": "E-Commerce",
+    # Fintech
+    "SOFI": "Fintech", "SQ": "Fintech", "COIN": "Fintech",
+    # EV / Otomotiv
+    "TSLA": "EV", "RIVN": "EV", "NIO": "EV", "LCID": "EV",
+    # Kripto Madenciliği
+    "MARA": "CryptoMining", "RIOT": "CryptoMining",
+    # Data / AI
+    "PLTR": "Data_AI",
+}
+
+# ============================================================
 # RİSK YÖNETİMİ AYARLARI
 # ============================================================
 RISK_CONFIG = {
@@ -208,6 +228,10 @@ STOCK_CONFIG = {
     "earnings_gate_enabled": True,          # Earnings koruma
     "volatility_filter_enabled": True,
     "max_atr_pct": 0.05,                    # ATR > %5 ise alım yapma
+    "bb_proximity_pct": 0.01,               # BB bant yakınlık eşiği (%1)
+
+    # === SEKTÖR KORELASYON KORUMASI ===
+    "max_positions_per_sector": 2,           # Aynı sektörde max 2 pozisyon
 
     # === KAYIP SERİSİ KORUYUCU ===
     "loss_streak_enabled": True,
@@ -215,6 +239,8 @@ STOCK_CONFIG = {
     "loss_streak_halt": 4,                  # 4 ardışık zarar → 1 gün alım yasağı
     "loss_streak_halt_hours": 24,
     "loss_streak_elevated_conf": 70,
+    "coin_filter_enabled": True,            # Hisse bazlı ardışık zarar filtresi
+    "coin_max_consecutive_losses": 3,
 
     # === R:R GATE ===
     "rr_gate_enabled": True,
@@ -233,10 +259,11 @@ STOCK_CONFIG = {
     "pdt_equity_threshold": 25000,
 
     # === ZAMANLAMA ===
-    "scan_interval_seconds": 30,            # Her 30 saniyede tara (hisse daha yavaş)
+    "scan_interval_seconds": 30,            # Her 30 saniyede tara
     "min_interval_high_conf": 10,           # %65+ güven: 10dk
     "min_interval_med_conf": 20,            # %55-64 güven: 20dk
     "min_interval_low_conf": 30,            # %50-54 güven: 30dk
+    "sell_cooldown_seconds": 300,            # 5 dakika satış cooldown (swing trade)
 
     # === KILL SWITCH ===
     "max_daily_loss_pct": 0.03,             # %3 günlük max kayıp
@@ -248,7 +275,7 @@ STOCK_CONFIG = {
     "status_report_interval": 5,
     "min_position_close_usd": 5.0,
 
-    # === KOMISYON (HİSSE = $0) ===
+    # === KOMİSYON (HİSSE = $0) ===
     "commission_pct": 0.0,
     "min_trade_value": 10.0,
 }
