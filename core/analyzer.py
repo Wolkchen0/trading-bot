@@ -258,8 +258,8 @@ class TechnicalAnalyzer:
                 if swing_high > 0:
                     dist_to_resist = (swing_high - current_price) / current_price
                     if dist_to_resist < sr_prox:
-                        buy_score -= 10
-                        sell_score += 10
+                        buy_score -= 20  # Dirençte alım YAPMA
+                        sell_score += 15
                         reasons.append("SR_resist")
         except Exception:
             pass

@@ -241,13 +241,13 @@ STOCK_CONFIG = {
     "cash_reserve_pct": 0.15,               # %15 nakit rezerv
     "equity_floor_pct": 0.85,               # Hesap %85'ine düşerse dur
 
-    # === STOP/PROFIT HEDEFLERİ ===
-    "stop_loss_pct": 0.03,                  # %3 stop-loss
-    "stop_loss_max_pct": 0.05,              # %5 max stop
-    "atr_stop_multiplier": 1.5,
-    "take_profit_pct": 0.06,                # %6 take-profit (2:1 R:R)
-    "trailing_stop_pct": 0.03,              # %3 trailing stop
-    "partial_profit_pct": 0.04,             # %4'de yarısını sat
+    # === STOP/PROFIT HEDEFLERİ (backtest sonrası optimize) ===
+    "stop_loss_pct": 0.04,                  # %4 stop-loss (3% çok dar)
+    "stop_loss_max_pct": 0.06,              # %6 max stop
+    "atr_stop_multiplier": 1.8,             # ATR çarpanı (1.5 çok sıkı)
+    "take_profit_pct": 0.08,                # %8 take-profit (2:1 R:R)
+    "trailing_stop_pct": 0.04,              # %4 trailing stop
+    "partial_profit_pct": 0.05,             # %5'de yarısını sat
 
     # === SINYAL EŞİKLERİ ===
     "rsi_oversold": 30,

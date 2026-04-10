@@ -54,14 +54,14 @@ BACKTEST_CONFIG = {
     "rsi_overbought": STOCK_CONFIG["rsi_overbought"],
     "bb_proximity_pct": STOCK_CONFIG.get("bb_proximity_pct", 0.01),
     "min_volume_ratio": STOCK_CONFIG.get("min_volume_ratio", 1.3),
-    "min_confidence": STOCK_CONFIG.get("min_confidence", 55),
+    "min_confidence": 25,  # Backtester: dusuk esik (canli bot haber+agent ile yukseltir)
 
     # === POZİSYON ===
     "commission_pct": 0.0,  # Hisse: $0
     "max_position_pct": STOCK_CONFIG["max_position_pct"],
     "max_open_positions": STOCK_CONFIG["max_open_positions"],
     "cash_reserve_pct": STOCK_CONFIG["cash_reserve_pct"],
-    "min_trade_interval_bars": 5,  # 5 günlük bar = 1 hafta
+    "min_trade_interval_bars": 3,  # 3 gunluk bar
 
     # === FİLTRELER ===
     "ema200_trend_gate": True,
@@ -82,7 +82,7 @@ BACKTEST_CONFIG = {
 }
 
 # Test edilecek hisseler
-DEFAULT_SYMBOLS = [s.replace("$", "") for s in STOCK_SEARCH_TERMS[:20]]
+DEFAULT_SYMBOLS = list(STOCK_SEARCH_TERMS.keys())[:20]
 
 
 class StockBacktester:
@@ -105,7 +105,7 @@ class StockBacktester:
         """yfinance'dan günlük veri çeker."""
         try:
             end = datetime.now()
-            start = end - timedelta(days=days + 30)  # Ekstra 30 gün (göstergeler için)
+            start = end - timedelta(days=days + 250)  # Ekstra 250 gun (EMA200 icin)
             df = yf.download(symbol, start=start, end=end, interval="1d", progress=False)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -116,14 +116,17 @@ class StockBacktester:
             return pd.DataFrame()
 
     def _analyze(self, df: pd.DataFrame) -> Dict:
-        """stock_bot.py'deki _quick_technical_analysis() mantığının kopyası."""
+        """
+        Tam teknik analiz — analyzer.py ile ayni mantik.
+        Ichimoku, ADX, OBV, Fibonacci, S/R, VWAP, Momentum dahil.
+        """
         if len(df) < 30:
             return {"signal": "HOLD", "confidence": 0, "reasons": []}
 
         close = df["close"]
         volume = df["volume"] if "volume" in df.columns else None
 
-        # Göstergeler
+        # === TEMEL GOSTERGELER ===
         rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
         ema_9 = EMAIndicator(close, window=9).ema_indicator().iloc[-1]
         ema_21 = EMAIndicator(close, window=21).ema_indicator().iloc[-1]
@@ -145,70 +148,218 @@ class StockBacktester:
 
         price = float(close.iloc[-1])
         reasons = []
-        tech_score = 0
+        buy_score = 0
+        sell_score = 0
 
-        # EMA200 Trend Gate
+        # === TREND (EMA50 + EMA200) ===
+        ema_50 = EMAIndicator(close, window=min(50, len(close)-1)).ema_indicator().iloc[-1]
         above_ema200 = True
         if len(close) >= 200:
             ema_200 = EMAIndicator(close, window=200).ema_indicator().iloc[-1]
             above_ema200 = price > ema_200
-            if above_ema200:
-                reasons.append("EMA200↑")
-            else:
-                tech_score -= 15
-                reasons.append("EMA200↓")
+        elif len(close) >= 100:
+            ema_200 = EMAIndicator(close, window=len(close)-1).ema_indicator().iloc[-1]
+            above_ema200 = price > ema_200
 
-        # Volume
+        if price > ema_50 and ema_9 > ema_21:
+            trend = "UPTREND"
+        elif price < ema_50 and ema_9 < ema_21:
+            trend = "DOWNTREND"
+        else:
+            trend = "SIDEWAYS"
+
+        # === VOLUME ===
+        volume_ok = True
         volume_ratio = 1.0
         if volume is not None and len(volume) > 20:
-            avg_vol = volume.rolling(20).mean().iloc[-1]
-            if avg_vol > 0:
-                volume_ratio = float(volume.iloc[-1] / avg_vol)
-                if volume_ratio >= 1.5:
-                    tech_score += 10
-                    reasons.append(f"Vol:{volume_ratio:.1f}x")
+            avg_volume = volume.rolling(20).mean().iloc[-1]
+            current_volume = volume.iloc[-1]
+            if avg_volume > 0:
+                volume_ratio = float(current_volume / avg_volume)
+                volume_ok = volume_ratio >= BACKTEST_CONFIG.get("min_volume_ratio", 1.3)
 
-        # RSI
+        # === VWAP ===
+        vwap_signal = "NEUTRAL"
+        if volume is not None and len(volume) > 20:
+            try:
+                typical_price = (df["high"] + df["low"] + df["close"]) / 3
+                tp_vol = (typical_price * volume).tail(20).sum()
+                vol_sum = volume.tail(20).sum()
+                if vol_sum > 0:
+                    vwap = tp_vol / vol_sum
+                    vwap_dist = (price - vwap) / vwap
+                    if vwap_dist < -0.01:
+                        vwap_signal = "BULLISH"
+                    elif vwap_dist > 0.02:
+                        vwap_signal = "BEARISH"
+            except Exception:
+                pass
+
+        # === MOMENTUM ===
+        price_change_5 = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
+        price_change_1 = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
+        momentum_up = price_change_5 > 0 and price_change_1 > 0
+
+        # === BUY SKORLAMA ===
         if rsi < BACKTEST_CONFIG["rsi_oversold"]:
-            tech_score += 25
+            buy_score += 25
             reasons.append(f"RSI={rsi:.0f}")
-        elif rsi > BACKTEST_CONFIG["rsi_overbought"]:
-            tech_score -= 20
-            reasons.append(f"RSI={rsi:.0f}⚠")
-
-        # EMA Cross
         if ema_9 > ema_21:
-            tech_score += 15
-            reasons.append("EMA9>21")
-        else:
-            tech_score -= 10
-
-        # MACD
+            buy_score += 15
+            reasons.append("EMA+")
         if macd_cross == "BULLISH":
-            tech_score += 15
-            reasons.append("MACD↑")
-        elif macd_cross == "BEARISH":
-            tech_score -= 10
-
-        # Bollinger Band
+            buy_score += 20
+            reasons.append("MACD+")
         if price <= bb_lower * (1 + BACKTEST_CONFIG["bb_proximity_pct"]):
-            tech_score += 10
-            reasons.append("BB↓")
-        elif price >= bb_upper:
-            tech_score -= 10
-            reasons.append("BB↑")
+            buy_score += 20
+            reasons.append("BB_dip")
+        if trend == "UPTREND":
+            buy_score += 10
+            reasons.append("Trend+")
+        elif trend == "DOWNTREND":
+            buy_score -= 15
+            reasons.append("Trend-")
+        if volume_ok and volume_ratio > 1.5:
+            buy_score += 10
+            reasons.append(f"Vol:{volume_ratio:.1f}x")
+        elif not volume_ok:
+            buy_score -= 10
+        if momentum_up:
+            buy_score += 5
+            reasons.append("Mom+")
+        if vwap_signal == "BULLISH":
+            buy_score += 10
+            reasons.append("VWAP-")
+        elif vwap_signal == "BEARISH":
+            buy_score -= 5
 
-        # Sinyal belirle
-        signal = "HOLD"
-        if tech_score >= 30:
+        # === GELISMIS GOSTERGELER ===
+        # Ichimoku
+        try:
+            from ta.trend import IchimokuIndicator
+            ichimoku = IchimokuIndicator(df["high"], df["low"], window1=9, window2=26, window3=52)
+            ich_a = ichimoku.ichimoku_a().iloc[-1]
+            ich_b = ichimoku.ichimoku_b().iloc[-1]
+            if pd.notna(ich_a) and pd.notna(ich_b):
+                cloud_top = max(ich_a, ich_b)
+                cloud_bottom = min(ich_a, ich_b)
+                if price > cloud_top:
+                    buy_score += 10
+                    reasons.append("Ichi+")
+                elif price < cloud_bottom:
+                    buy_score -= 10
+                    reasons.append("Ichi-")
+        except Exception:
+            pass
+
+        # ADX
+        try:
+            from ta.trend import ADXIndicator
+            adx_ind = ADXIndicator(df["high"], df["low"], df["close"], window=14)
+            adx_val = adx_ind.adx().iloc[-1]
+            adx_pos = adx_ind.adx_pos().iloc[-1]
+            adx_neg = adx_ind.adx_neg().iloc[-1]
+            if pd.notna(adx_val) and adx_val > 25:
+                if adx_pos > adx_neg and trend == "UPTREND":
+                    buy_score += 10
+                    reasons.append(f"ADX:{adx_val:.0f}+")
+                elif adx_neg > adx_pos:
+                    buy_score -= 5
+        except Exception:
+            pass
+
+        # OBV Divergence
+        try:
+            from ta.volume import OnBalanceVolumeIndicator
+            obv = OnBalanceVolumeIndicator(df["close"], df["volume"]).on_balance_volume()
+            obv_sma = obv.rolling(10).mean()
+            obv_rising = obv.iloc[-1] > obv_sma.iloc[-1] if pd.notna(obv_sma.iloc[-1]) else False
+            if obv_rising and price_change_5 < 0:
+                buy_score += 15
+                reasons.append("OBV_div+")
+            elif not obv_rising and price_change_5 > 0:
+                buy_score -= 5
+        except Exception:
+            pass
+
+        # Fibonacci Retracement
+        try:
+            lookback = min(50, len(df))
+            fib_high = df["high"].tail(lookback).max()
+            fib_low = df["low"].tail(lookback).min()
+            fib_range = fib_high - fib_low
+            if fib_range > 0:
+                fib_382 = fib_high - fib_range * 0.382
+                fib_618 = fib_high - fib_range * 0.618
+                if abs(price - fib_618) / price < 0.01:
+                    buy_score += 10
+                    reasons.append("Fib_618")
+                elif abs(price - fib_382) / price < 0.01:
+                    buy_score += 5
+                    reasons.append("Fib_382")
+        except Exception:
+            pass
+
+        # Support/Resistance
+        try:
+            sr_lb = min(50, len(df))
+            sr_prox = 0.015
+            recent = df.tail(sr_lb)
+            sw_low = recent["low"].min()
+            sw_high = recent["high"].max()
+            if sw_low > 0:
+                dist_sup = (price - sw_low) / price
+                if dist_sup < sr_prox:
+                    buy_score += 15
+                    reasons.append("SR_support")
+            if sw_high > 0:
+                dist_res = (sw_high - price) / price
+                if dist_res < sr_prox:
+                    buy_score -= 20  # Direncte alim YAPMA (backtest: cok fazla direnste alim)
+                    sell_score += 15
+                    reasons.append("SR_resist")
+        except Exception:
+            pass
+
+        # === SELL SKORLAMA ===
+        if rsi > BACKTEST_CONFIG["rsi_overbought"]:
+            sell_score += 25
+            reasons.append(f"RSI={rsi:.0f}")
+        if ema_9 < ema_21:
+            sell_score += 15
+        if macd_cross == "BEARISH":
+            sell_score += 20
+            reasons.append("MACD-")
+        if price > bb_upper:
+            sell_score += 20
+            reasons.append("BB_top")
+        if trend == "DOWNTREND":
+            sell_score += 10
+
+        # Momentum/Breakout
+        if trend == "UPTREND" and 40 <= rsi <= 65:
+            if momentum_up and volume_ok:
+                buy_score += 15
+                reasons.append("Momentum_BUY")
+            elif price_change_5 > 2.0:
+                buy_score += 10
+                reasons.append(f"Breakout:{price_change_5:.1f}%")
+
+        # === KARAR ===
+        if buy_score >= 25:
             signal = "BUY"
-        elif tech_score <= -20:
+            confidence = min(buy_score, 100)
+        elif sell_score >= 25:
             signal = "SELL"
+            confidence = min(sell_score, 100)
+        else:
+            signal = "HOLD"
+            confidence = 0
 
         return {
             "signal": signal,
-            "confidence": min(abs(tech_score) * 1.5, 100),
-            "tech_score": tech_score,
+            "confidence": confidence,
+            "tech_score": buy_score,
             "reasons": reasons,
             "price": price,
             "rsi": float(rsi),
@@ -334,32 +485,37 @@ class StockBacktester:
                 # Trailing stop
                 elif pnl_pct > 0.01 and trailing_drop >= BACKTEST_CONFIG["trailing_stop_pct"]:
                     symbols_to_close.append((sym, "TRAILING_STOP", price, pnl_pct))
-                # Kademeli kâr
+                # Kademeli kar
                 elif (pnl_pct >= BACKTEST_CONFIG["partial_profit_pct"]
                       and not pos.get("partial_sold", False)):
                     half_qty = max(int(pos["qty"] * 0.5), 1) if pos["qty"] >= 2 else pos["qty"]
                     half_value = half_qty * price
+                    partial_pnl = (price - pos["entry_price"]) * half_qty
                     self.capital += half_value
                     pos["qty"] -= half_qty
                     pos["partial_sold"] = True
+                    pos["partial_pnl_usd"] = partial_pnl  # Partial kar takibi
                     self.trades.append({
                         "action": "PARTIAL_SELL", "symbol": sym,
                         "price": price, "qty": half_qty,
+                        "pnl_usd": round(partial_pnl, 2),
                         "pnl_pct": round(pnl_pct * 100, 2),
                         "reason": "PARTIAL_PROFIT",
                         "time": str(current_time),
                     })
 
-            # Satışları uygula
+            # Satislari uygula
             for sym, reason, price, pnl_pct in symbols_to_close:
                 pos = self.positions[sym]
                 sell_value = pos["qty"] * price
-                pnl_usd = (price - pos["entry_price"]) * pos["qty"]
+                remaining_pnl = (price - pos["entry_price"]) * pos["qty"]
+                # Toplam P&L = partial kar + kalan hisseler kari
+                total_pnl = remaining_pnl + pos.get("partial_pnl_usd", 0)
                 self.capital += sell_value
                 total_sells += 1
 
-                # Ardışık zarar takibi
-                if reason == "STOP_LOSS":
+                # Ardisik zarar takibi
+                if total_pnl < 0:
                     self._symbol_consecutive_losses[sym] = self._symbol_consecutive_losses.get(sym, 0) + 1
                 else:
                     self._symbol_consecutive_losses[sym] = 0
@@ -369,7 +525,7 @@ class StockBacktester:
                     "action": "SELL", "symbol": sym, "sector": sector,
                     "price": price, "qty": pos["qty"],
                     "entry_price": pos["entry_price"],
-                    "pnl_usd": round(pnl_usd, 2),
+                    "pnl_usd": round(total_pnl, 2),
                     "pnl_pct": round(pnl_pct * 100, 2),
                     "reason": reason,
                     "time": str(current_time),
