@@ -23,9 +23,8 @@ vaderSentiment>=3.3.2
 # X (Twitter) Scraper — ücretsiz, API key gerekmez
 ntscraper>=0.3.0
 
-# FinBERT — Finansal domain NLP
+# FinBERT — Finansal domain NLP (torch is installed separately in Dockerfile with CPU-only)
 transformers>=4.35.0
-torch>=2.1.0
 
 # Testing
 pytest>=7.4.0

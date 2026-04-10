@@ -47,17 +47,23 @@ class FinBERTAnalyzer:
         self._load_attempts = 0
         self._max_load_attempts = 2
         
-        # Kripto-spesifik kelime ağırlıkları (FinBERT sonucunu ayarlar)
-        self.crypto_boost = {
+        # Hisse senedi-spesifik kelime ağırlıkları (FinBERT sonucunu ayarlar)
+        self.stock_boost = {
             # Güçlü bullish kelimeler
-            "moon": 0.15, "ath": 0.12, "surge": 0.10, "breakout": 0.12,
-            "rally": 0.10, "adoption": 0.10, "upgrade": 0.08,
-            "partnership": 0.08, "accumulate": 0.08, "bullish": 0.10,
+            "upgrade": 0.12, "outperform": 0.10, "buy rating": 0.12,
+            "beat estimate": 0.15, "earnings beat": 0.15, "revenue beat": 0.12,
+            "raised guidance": 0.15, "strong buy": 0.12, "bullish": 0.10,
+            "fda approv": 0.15, "acquisition": 0.08, "buyback": 0.10,
+            "dividend increase": 0.10, "all-time high": 0.08,
+            "breakout": 0.10, "rally": 0.10, "surge": 0.10,
             # Güçlü bearish kelimeler
-            "crash": -0.15, "rug pull": -0.20, "scam": -0.18,
-            "hack": -0.15, "exploit": -0.15, "dump": -0.12,
-            "ban": -0.12, "sec lawsuit": -0.15, "ponzi": -0.18,
-            "bearish": -0.10, "liquidation": -0.12,
+            "downgrade": -0.12, "sell rating": -0.12, "underperform": -0.10,
+            "earnings miss": -0.15, "revenue miss": -0.12,
+            "lowered guidance": -0.15, "restructur": -0.10,
+            "layoff": -0.10, "recall": -0.12, "lawsuit": -0.10,
+            "sec investig": -0.15, "fraud": -0.18, "bankruptcy": -0.20,
+            "tariff": -0.10, "sanctions": -0.12, "crash": -0.15,
+            "bearish": -0.10, "default": -0.15,
         }
         
         # Model yüklemeyi dene
@@ -66,7 +72,7 @@ class FinBERTAnalyzer:
         # VADER fallback
         if VADER_AVAILABLE and not self.model_loaded:
             self.vader = SentimentIntensityAnalyzer()
-            self._add_crypto_lexicon()
+            self._add_stock_lexicon()
             logger.info("FinBERT yuklenemedi, VADER fallback aktif")
 
     def _load_model(self):
@@ -100,19 +106,23 @@ class FinBERTAnalyzer:
             logger.warning(f"FinBERT yukleme hatasi: {e}")
             self.model_loaded = False
 
-    def _add_crypto_lexicon(self):
-        """VADER'a kripto kelimeler ekle (fallback için)."""
+    def _add_stock_lexicon(self):
+        """VADER'a hisse senedi kelimeleri ekle (fallback için)."""
         if not self.vader:
             return
-        crypto_words = {
-            "moon": 2.5, "mooning": 3.0, "bullish": 2.0, "bearish": -2.0,
-            "pump": 1.5, "dump": -2.0, "rekt": -3.0, "hodl": 1.5,
-            "fud": -1.5, "fomo": 1.0, "rally": 2.0, "rug": -3.5,
-            "scam": -3.0, "hack": -2.5, "surge": 2.5, "crash": -3.0,
-            "ath": 2.0, "accumulate": 1.5, "breakout": 2.5,
-            "adoption": 2.0, "partnership": 1.8, "upgrade": 1.5,
+        stock_words = {
+            "upgrade": 2.5, "downgrade": -2.5, "outperform": 2.0,
+            "underperform": -2.0, "overweight": 1.5, "underweight": -1.5,
+            "bullish": 2.0, "bearish": -2.0, "rally": 2.0, "surge": 2.5,
+            "crash": -3.0, "plunge": -2.5, "tumble": -2.0,
+            "buyback": 1.5, "dividend": 1.5, "guidance": 1.0,
+            "beat": 2.0, "miss": -2.0, "layoff": -2.0, "restructuring": -1.5,
+            "acquisition": 1.5, "merger": 1.0, "bankruptcy": -3.5,
+            "fda": 1.0, "approved": 2.0, "rejected": -2.5,
+            "breakout": 2.5, "selloff": -2.5, "correction": -1.5,
+            "momentum": 1.5, "overbought": -1.0, "oversold": 1.0,
         }
-        self.vader.lexicon.update(crypto_words)
+        self.vader.lexicon.update(stock_words)
 
     def analyze(self, text: str) -> Dict:
         """
@@ -162,8 +172,8 @@ class FinBERTAnalyzer:
             else:
                 score = 0.0
             
-            # Kripto boost uygula
-            boost = self._get_crypto_boost(text)
+            # Hisse senedi boost uygula
+            boost = self._get_stock_boost(text)
             score = max(-1.0, min(1.0, score + boost))
             
             # Boost sonrası label güncelle
@@ -236,11 +246,11 @@ class FinBERTAnalyzer:
             "source": "simple",
         }
 
-    def _get_crypto_boost(self, text: str) -> float:
-        """Kripto-spesifik kelimeler için ek boost."""
+    def _get_stock_boost(self, text: str) -> float:
+        """Hisse senedi-spesifik kelimeler için ek boost."""
         text_lower = text.lower()
         boost = 0.0
-        for word, value in self.crypto_boost.items():
+        for word, value in self.stock_boost.items():
             if word in text_lower:
                 boost += value
         return max(-0.3, min(0.3, boost))
