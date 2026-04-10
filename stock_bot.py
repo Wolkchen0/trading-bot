@@ -64,6 +64,7 @@ from core.kill_switch import KillSwitch
 from core.compliance import WashSaleTracker
 from core.notifier import TelegramNotifier
 from core.performance_tracker import PerformanceTracker
+from core.sector_rotation import SectorRotator
 
 # FinBERT opsiyonel
 try:
@@ -181,6 +182,9 @@ class StockBot:
 
         # Performans takibi
         self.performance = PerformanceTracker()
+
+        # Sektör rotasyonu (VIX bazlı)
+        self.sector_rotator = SectorRotator()
 
         # FinBERT (opsiyonel)
         if FINBERT_AVAILABLE:
@@ -349,7 +353,18 @@ class StockBot:
             if "oil" in macro:
                 logger.info(f"  Petrol: {macro['oil'].get('description', 'N/A')}")
             if "vix" in macro:
-                logger.info(f"  VIX: {macro['vix'].get('description', 'N/A')}")
+                vix_data = macro["vix"]
+                vix_value = vix_data.get("value", 20)
+                logger.info(f"  VIX: {vix_data.get('description', 'N/A')} ({vix_value:.1f})")
+                # Sektör rotasyonu güncelle
+                self.sector_rotator.update_vix(vix_value)
+                sr_status = self.sector_rotator.get_status()
+                logger.info(
+                    f"  🔄 Sektör Rejim: {sr_status['regime'].upper()} | "
+                    f"Max Poz: {sr_status['max_positions']} | "
+                    f"Favori: {', '.join(sr_status['preferred_sectors']) or 'YOK'} | "
+                    f"Kaçın: {', '.join(sr_status['avoid_sectors']) or 'YOK'}"
+                )
         except Exception as e:
             logger.debug(f"  Makro analiz hatası: {e}")
 
@@ -393,11 +408,18 @@ class StockBot:
             decision = self._get_agent_decision(symbol, analysis, config)
 
             if decision["signal"] == "BUY" and decision["confidence"] >= config.get("min_confidence_score", 50):
+                # Sektör rotasyonu kontrolü (VIX bazlı)
+                if not self.sector_rotator.should_buy(symbol):
+                    logger.debug(f"  {symbol} SEKTÖR ROTASYON BLOK: {self.sector_rotator.current_regime} rejiminde kaçınılıyor")
+                    return
+
                 # Gate kontrolü
                 passed, block_reason = self.trade_gates.check_all_gates(symbol, analysis, config)
                 if passed:
                     analysis["confidence"] = decision["confidence"]
                     analysis["reasons"] = [decision["reasoning"]]
+                    # Sektör rotasyonu ağırlık çarpanı
+                    analysis["sector_weight"] = self.sector_rotator.get_weight_multiplier(symbol)
                     self.executor.execute_buy(symbol, analysis, config)
                 else:
                     logger.debug(f"  {symbol} GATE BLOK: {block_reason}")

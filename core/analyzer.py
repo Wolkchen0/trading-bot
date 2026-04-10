@@ -85,6 +85,25 @@ class TechnicalAnalyzer:
                 volume_ratio = current_volume / avg_volume
                 volume_ok = volume_ratio >= config["min_volume_ratio"]
 
+        # === VWAP (Volume Weighted Average Price) ===
+        vwap = None
+        vwap_signal = "NEUTRAL"
+        if volume is not None and len(volume) > 20:
+            try:
+                typical_price = (df["high"] + df["low"] + df["close"]) / 3
+                # Günlük VWAP — son 20 bar üzerinden
+                tp_vol = (typical_price * volume).tail(20).sum()
+                vol_sum = volume.tail(20).sum()
+                if vol_sum > 0:
+                    vwap = tp_vol / vol_sum
+                    vwap_dist = (current_price - vwap) / vwap
+                    if vwap_dist < -0.01:  # VWAP'ın altında: indirimli, alım fırsatı
+                        vwap_signal = "BULLISH"
+                    elif vwap_dist > 0.02:  # VWAP üzerinde: primli
+                        vwap_signal = "BEARISH"
+            except Exception:
+                pass
+
         # === MOMENTUM ===
         price_change_5 = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
         price_change_1 = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
@@ -125,6 +144,14 @@ class TechnicalAnalyzer:
         if momentum_up:
             buy_score += 5
             reasons.append("Mom+")
+
+        # === VWAP SKORLAMA ===
+        if vwap_signal == "BULLISH":
+            buy_score += 10
+            reasons.append("VWAP↓")  # Fiyat VWAP altında = alım fırsatı
+        elif vwap_signal == "BEARISH":
+            buy_score -= 5
+            reasons.append("VWAP↑")  # Fiyat VWAP çok üstünde = primli
 
         # === GELİŞMİŞ GÖSTERGELER ===
         try:
@@ -293,6 +320,8 @@ class TechnicalAnalyzer:
             "trend": trend,
             "volume_ratio": volume_ratio,
             "momentum_5bar": price_change_5,
+            "vwap": vwap,
+            "vwap_signal": vwap_signal,
         }
 
     def analyze_with_news(self, df, symbol: str, config: Dict) -> Dict:

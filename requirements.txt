@@ -26,5 +26,8 @@ ntscraper>=0.3.0
 # FinBERT — Finansal domain NLP (torch is installed separately in Dockerfile with CPU-only)
 transformers>=4.35.0
 
+# Backtesting — Geçmiş veri çekme
+yfinance>=0.2.30
+
 # Testing
 pytest>=7.4.0
