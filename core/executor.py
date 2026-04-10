@@ -142,6 +142,15 @@ class OrderExecutor:
             })
             bot.consecutive_errors = 0
             bot._daily_buys_count = getattr(bot, '_daily_buys_count', 0) + 1
+
+            # Telegram bildirim
+            if hasattr(bot, 'notifier'):
+                bot.notifier.notify_buy(
+                    symbol, qty, price,
+                    confidence=int(analysis.get('confidence', 0)),
+                    reasons=analysis.get('reasons', []),
+                )
+
             return True
 
         except Exception as e:
@@ -239,6 +248,19 @@ class OrderExecutor:
                 sym_losses = getattr(bot, '_symbol_consecutive_losses', {})
                 sym_losses[symbol] = 0
                 bot._symbol_consecutive_losses = sym_losses
+
+            # Performans takibi + Telegram bildirim
+            if hasattr(bot, 'performance'):
+                from config import SECTOR_MAP
+                sector = SECTOR_MAP.get(symbol, "Unknown")
+                bot.performance.record_trade(
+                    symbol=symbol, action="SELL", qty=float(qty),
+                    price=float(entry), pnl=pnl_usd, reason=reason,
+                    sector=sector,
+                )
+            if hasattr(bot, 'notifier'):
+                pnl_pct = (pnl_usd / max(float(entry) * float(qty), 0.01)) * 100 if entry else 0
+                bot.notifier.notify_sell(symbol, reason, pnl_usd, pnl_pct)
 
             bot.consecutive_errors = 0
             return True

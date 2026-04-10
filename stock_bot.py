@@ -62,6 +62,8 @@ from core.fundamental_analyzer import FundamentalAnalyzer
 from core.macro_data import MacroDataAnalyzer
 from core.kill_switch import KillSwitch
 from core.compliance import WashSaleTracker
+from core.notifier import TelegramNotifier
+from core.performance_tracker import PerformanceTracker
 
 # FinBERT opsiyonel
 try:
@@ -173,6 +175,12 @@ class StockBot:
 
         # Wash Sale takibi
         self.wash_sale_tracker = WashSaleTracker()
+
+        # Telegram bildirimleri
+        self.notifier = TelegramNotifier()
+
+        # Performans takibi
+        self.performance = PerformanceTracker()
 
         # FinBERT (opsiyonel)
         if FINBERT_AVAILABLE:
@@ -787,6 +795,19 @@ class StockBot:
         today = date.today()
         if self._daily_reset_date == today:
             return
+
+        # Önceki günün özetini gönder (ilk çalıştırma hariç)
+        if self._daily_reset_date is not None:
+            pnl = self.equity - self.initial_equity
+            wins = len([t for t in self.trades_today if "TAKE_PROFIT" in str(t) or "TRAILING_STOP" in str(t)])
+            losses = len([t for t in self.trades_today if "STOP_LOSS" in str(t)])
+            self.notifier.notify_daily_summary(
+                equity=self.equity, pnl=pnl,
+                trades_count=len(self.trades_today),
+                positions=self.positions,
+                wins=wins, losses=losses,
+            )
+
         self._daily_reset_date = today
         self.trades_today = []
         self._daily_buys_count = 0
@@ -797,6 +818,7 @@ class StockBot:
     def _emergency_close_all(self, reason: str):
         """KillSwitch tarafından çağrılır — tüm pozisyonları kapat."""
         logger.error(f"🚨 ACİL KAPANIŞ: {reason}")
+        self.notifier.notify_kill_switch(reason, self.equity)
         try:
             self.client.close_all_positions(cancel_orders=True)
             logger.error("  Tüm pozisyonlar kapatıldı, emirler iptal edildi.")
