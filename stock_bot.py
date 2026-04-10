@@ -788,36 +788,73 @@ class StockBot:
     # ============================================================
 
     def _sync_positions_from_alpaca(self):
-        """Alpaca'dan açık pozisyonları senkronize et (restart-safe)."""
+        """Alpaca'dan açık pozisyonları senkronize et (restart-safe).
+        
+        Alpaca'da qty > 0 = LONG, qty < 0 = SHORT pozisyon.
+        BOT_MODE'a göre sadece ilgili pozisyonlar sync edilir.
+        """
         try:
             alpaca_positions = self.client.get_all_positions()
-            synced = 0
+            synced_long = 0
+            synced_short = 0
+
             for pos in alpaca_positions:
                 symbol = pos.symbol
-                if symbol not in self.positions:
-                    self.positions[symbol] = {
-                        "entry_price": float(pos.avg_entry_price),
-                        "qty": float(pos.qty),
-                        "entry_time": datetime.now().isoformat(),  # Gerçek zaman bilinmiyor
-                        "synced_from_alpaca": True,
-                        "highest_price": float(pos.current_price),
-                    }
-                    synced += 1
-                    logger.info(
-                        f"  🔄 Pozisyon sync: {symbol} | "
-                        f"{float(pos.qty):.4f} @ ${float(pos.avg_entry_price):,.2f} | "
-                        f"P&L: ${float(pos.unrealized_pl):+.2f}"
-                    )
+                qty = float(pos.qty)
+                entry_price = float(pos.avg_entry_price)
+                current_price = float(pos.current_price)
+                unrealized_pl = float(pos.unrealized_pl)
+
+                if qty > 0:
+                    # LONG pozisyon
+                    if symbol not in self.positions and BOT_MODE in ("long_only", "both"):
+                        self.positions[symbol] = {
+                            "entry_price": entry_price,
+                            "qty": qty,
+                            "entry_time": datetime.now().isoformat(),
+                            "synced_from_alpaca": True,
+                            "highest_price": current_price,
+                        }
+                        synced_long += 1
+                        logger.info(
+                            f"  🔄 LONG sync: {symbol} | "
+                            f"{qty:.4f} @ ${entry_price:,.2f} | "
+                            f"P&L: ${unrealized_pl:+.2f}"
+                        )
+                elif qty < 0:
+                    # SHORT pozisyon (Alpaca negatif qty = short)
+                    if symbol not in self.short_positions and BOT_MODE in ("short_only", "both"):
+                        self.short_positions[symbol] = {
+                            "entry_price": entry_price,
+                            "qty": abs(qty),
+                            "entry_time": datetime.now().isoformat(),
+                            "synced_from_alpaca": True,
+                            "lowest_price": current_price,
+                        }
+                        synced_short += 1
+                        logger.info(
+                            f"  🔄 SHORT sync: {symbol} | "
+                            f"{abs(qty):.4f} @ ${entry_price:,.2f} | "
+                            f"P&L: ${unrealized_pl:+.2f}"
+                        )
 
             # Bot'ta var ama Alpaca'da olmayan pozisyonları temizle
-            alpaca_symbols = {pos.symbol for pos in alpaca_positions}
+            alpaca_long_symbols = {pos.symbol for pos in alpaca_positions if float(pos.qty) > 0}
+            alpaca_short_symbols = {pos.symbol for pos in alpaca_positions if float(pos.qty) < 0}
+
             for symbol in list(self.positions.keys()):
-                if symbol not in alpaca_symbols:
-                    logger.warning(f"  🗑️ Pozisyon temizlendi (Alpaca'da yok): {symbol}")
+                if symbol not in alpaca_long_symbols:
+                    logger.warning(f"  🗑️ LONG temizlendi (Alpaca'da yok): {symbol}")
                     self.positions.pop(symbol)
 
-            if synced > 0:
-                logger.info(f"  Toplam {synced} pozisyon Alpaca'dan senkronize edildi")
+            for symbol in list(self.short_positions.keys()):
+                if symbol not in alpaca_short_symbols:
+                    logger.warning(f"  🗑️ SHORT temizlendi (Alpaca'da yok): {symbol}")
+                    self.short_positions.pop(symbol)
+
+            total = synced_long + synced_short
+            if total > 0:
+                logger.info(f"  Sync: {synced_long} long + {synced_short} short = {total} pozisyon")
 
         except Exception as e:
             logger.error(f"  Pozisyon sync hatası: {e}")
