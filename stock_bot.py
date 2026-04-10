@@ -295,6 +295,25 @@ class StockBot:
                 if not self._morning_scan_done or self._morning_scan_date != date.today():
                     self._do_morning_scan()
 
+                # 🌍 Jeopolitik risk taraması (her döngüde, 2dk cache)
+                try:
+                    geo_scan = self.news_analyzer.scan_geopolitical_breaking()
+                    geo_level = geo_scan.get("geo_risk_level", "NORMAL")
+                    geo_score = geo_scan.get("geo_risk_score", 0)
+
+                    if geo_level == "CRITICAL":
+                        logger.warning(
+                            f"  🚨 JEOPOLİTİK KRİTİK! Skor: {geo_score} | "
+                            f"Yeni alım ENGELLENDİ. Mevcut pozisyonlar korunuyor."
+                        )
+                        time.sleep(config.get("scan_interval_seconds", 30))
+                        continue  # Yeni alım yapma, sadece pozisyon yönet
+                    elif geo_level == "HIGH":
+                        max_positions = min(max_positions, 1)
+                        logger.info(f"  ⚠️ Jeopolitik HIGH — Max pozisyon 1'e düşürüldü")
+                except Exception as e:
+                    logger.debug(f"  Jeopolitik tarama hatası: {e}")
+
                 # Hisse analizi
                 symbols = self._get_symbols_to_analyze()
                 for symbol in symbols:

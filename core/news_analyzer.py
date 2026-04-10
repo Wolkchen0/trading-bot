@@ -2,10 +2,12 @@
 Hisse Senedi Haber Takip & Gelişmiş Duygu Analizi Modülü
 - Alpha Vantage News API
 - Marketaux API  
+- Google News RSS (ücretsiz, gerçek zamanlı)
 - Finviz haber tarama
 - Fear & Greed Index (CNN)
 - FinBERT + VADER duygu analizi
-- Jeopolitik risk takibi (Hürmüz Boğazı, petrol, savaş)
+- Jeopolitik risk takibi (savaş, ateşkes ihlali, enerji krizi)
+- Breaking News dedektörü
 """
 import os
 import time
@@ -45,8 +47,8 @@ NEWS_CONFIG = {
         "partnership", "contract win", "fda approval", "patent granted",
         # Makro pozitif
         "rate cut", "inflation cools", "jobs growth", "stimulus",
-        "fed dovish", "soft landing", "ceasefire", "peace deal",
-        "trade deal", "sanctions lifted",
+        "fed dovish", "soft landing", "ceasefire agreed", "peace deal",
+        "trade deal", "sanctions lifted", "de-escalation",
     ],
     "bearish_keywords": [
         # Hisse negatif
@@ -59,23 +61,28 @@ NEWS_CONFIG = {
         "rate hike", "inflation surge", "recession", "unemployment rise",
         "fed hawkish", "default risk", "banking crisis", "yield inversion",
         "bear market", "sell-off", "crash", "panic",
-        # Jeopolitik
+        # Jeopolitik (duplike olsa da keyword_score için gerekli)
         "war escalat", "military strike", "missile", "strait of hormuz",
         "oil surge", "oil spike", "sanctions", "embargo", "tariff war",
         "invasion", "bombing", "nuclear", "blockade", "supply disruption",
+        "drone attack", "ceasefire violat", "ceasefire collapse",
+        "resumed attack", "broke ceasefire", "ground offensive",
+        "airstrike", "shelling", "terrorist", "hostage",
     ],
 
     # Cache süresi
-    "cache_minutes": 10,  # Haber hızlı eskir
+    "cache_minutes": 5,           # Normal haberler: 5 dk
+    "geo_cache_minutes": 2,       # Jeopolitik: 2 dk (daha hızlı yenile)
+    "breaking_cache_minutes": 1,  # Breaking news: 1 dk
 
     # API rate limit koruması
-    "alpha_vantage_cooldown": 15,  # AV: dakikada 5 istek (ücretsiz)
+    "alpha_vantage_cooldown": 15,
     "marketaux_cooldown": 10,
 }
 
 
 class StockNewsAnalyzer:
-    """Hisse senedi haberleri analizi — Alpha Vantage + Marketaux."""
+    """Hisse senedi haberleri analizi — Alpha Vantage + Marketaux + Google News RSS."""
 
     def __init__(self):
         self.alpha_vantage_key = os.getenv("ALPHA_VANTAGE_KEY", "")
@@ -84,6 +91,9 @@ class StockNewsAnalyzer:
         self.last_fetch = {}
         self.finbert = None
         self.vader = None
+        self._last_geo_risk = "NORMAL"
+        self._geo_risk_score = 0
+        self._breaking_detected = False
 
         # FinBERT veya VADER başlat
         if FINBERT_AVAILABLE:
@@ -136,6 +146,10 @@ class StockNewsAnalyzer:
         if self.marketaux_token:
             mx_articles = self._fetch_marketaux_news(symbol)
             articles.extend(mx_articles)
+
+        # Google News RSS (ücretsiz, gerçek zamanlı)
+        gn_articles = self._fetch_google_news(symbol)
+        articles.extend(gn_articles)
 
         # Analiz et
         if not articles:
@@ -350,30 +364,67 @@ class StockNewsAnalyzer:
 
     def _check_geopolitical_risk(self, articles: List[Dict]) -> str:
         """
-        Haberlerde jeopolitik risk var mı?
-        Hürmüz Boğazı, petrol krizi, savaş vs.
+        Haberlerde jeopolitik risk var mı? Severity skoruyla birlikte.
         """
         all_text = " ".join(
             f"{a.get('title', '')} {a.get('summary', '')}" for a in articles
         ).lower()
 
         risk_count = 0
+        risk_keywords_found = []
         for keyword in GEOPOLITICAL_KEYWORDS["bearish"]:
             if keyword in all_text:
                 risk_count += 1
+                risk_keywords_found.append(keyword)
 
         safe_count = 0
         for keyword in GEOPOLITICAL_KEYWORDS["bullish"]:
             if keyword in all_text:
                 safe_count += 1
 
-        if risk_count >= 3:
-            return "HIGH"
+        # Sonuç
+        if risk_count >= 5:
+            level = "CRITICAL"
+            self._geo_risk_score = min(risk_count * 15, 100)
+        elif risk_count >= 3:
+            level = "HIGH"
+            self._geo_risk_score = risk_count * 12
         elif risk_count >= 1:
-            return "ELEVATED"
+            level = "ELEVATED"
+            self._geo_risk_score = risk_count * 8
         elif safe_count >= 2:
-            return "LOW"
-        return "NORMAL"
+            level = "LOW"
+            self._geo_risk_score = -safe_count * 5
+        else:
+            level = "NORMAL"
+            self._geo_risk_score = 0
+
+        self._last_geo_risk = level
+
+        # Breaking news dedektörü: ateşkes ihlali / yeni saldırı
+        breaking_terms = [
+            "ceasefire violat", "ceasefire collapse", "broke ceasefire",
+            "resumed attack", "resumed fighting", "broke truce",
+            "breaking:", "just in:", "developing:",
+        ]
+        for term in breaking_terms:
+            if term in all_text:
+                self._breaking_detected = True
+                level = "CRITICAL"
+                self._geo_risk_score = max(self._geo_risk_score, 80)
+                logger.warning(
+                    f"  🚨 BREAKING GEO EVENT: '{term}' tespit edildi! "
+                    f"Risk: {self._geo_risk_score}"
+                )
+                break
+
+        if risk_keywords_found and risk_count >= 2:
+            logger.info(
+                f"  ⚠️ Jeopolitik: {level} (skor:{self._geo_risk_score}) "
+                f"| Kelimeler: {', '.join(risk_keywords_found[:5])}"
+            )
+
+        return level
 
     def get_market_sentiment(self) -> Dict:
         """
@@ -429,4 +480,109 @@ class StockNewsAnalyzer:
         if key not in self.cache or key not in self.last_fetch:
             return False
         elapsed = (datetime.now() - self.last_fetch[key]).total_seconds()
+        # Breaking event varsa cache'i kısalt
+        if self._breaking_detected:
+            return elapsed < NEWS_CONFIG.get("breaking_cache_minutes", 1) * 60
+        # Jeopolitik haberler daha sık yenilenir
+        if "geo_" in key or "market" in key:
+            return elapsed < NEWS_CONFIG.get("geo_cache_minutes", 2) * 60
         return elapsed < NEWS_CONFIG["cache_minutes"] * 60
+
+    # ============================================================
+    # GOOGLE NEWS RSS (ÜCRETSIZ, GERÇEK ZAMANLI)
+    # ============================================================
+
+    def _fetch_google_news(self, symbol: str) -> List[Dict]:
+        """
+        Google News RSS — ücretsiz, API key gerekmez, gerçek zamanlı.
+        Rate limit yok, sadece HTML parse.
+        """
+        try:
+            url = f"https://news.google.com/rss/search?q={symbol}+stock&hl=en-US&gl=US&ceid=US:en"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if response.status_code != 200:
+                return []
+
+            # Basit XML parse (xml.etree)
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.content)
+            articles = []
+
+            for item in root.findall(".//item")[:8]:
+                title = item.findtext("title", "")
+                pub_date = item.findtext("pubDate", "")
+                source = item.findtext("source", "Google News")
+
+                # PubDate format: "Wed, 09 Apr 2026 18:30:00 GMT"
+                published = ""
+                try:
+                    from email.utils import parsedate_to_datetime
+                    dt = parsedate_to_datetime(pub_date)
+                    published = dt.strftime("%Y-%m-%dT%H:%M:%S")
+                except Exception:
+                    published = pub_date
+
+                articles.append({
+                    "title": title,
+                    "summary": title,  # RSS'de summary yok, title kullan
+                    "source": source if isinstance(source, str) else "Google News",
+                    "published": published,
+                    "sentiment_score": 0,
+                    "api": "google_news",
+                })
+
+            return articles
+        except Exception as e:
+            logger.debug(f"Google News RSS hatası {symbol}: {e}")
+            return []
+
+    # ============================================================
+    # GENEL JEOPOLİTİK TARAMA (sıfıra bağlı değil)
+    # ============================================================
+
+    def scan_geopolitical_breaking(self) -> Dict:
+        """
+        Genel dünya haberleri taraması — sembol bağımsız.
+        Savaş, ateşkes ihlali, enerji krizi tespit eder.
+        """
+        cache_key = "geo_breaking_scan"
+        if self._is_cached(cache_key):
+            return self.cache[cache_key]
+
+        articles = []
+
+        # Genel piyasa/dünya haberleri
+        for query in ["stock market", "geopolitical", "war", "oil price"]:
+            try:
+                url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+                headers = {"User-Agent": "Mozilla/5.0"}
+                resp = requests.get(url, headers=headers, timeout=8)
+                if resp.status_code == 200:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(resp.content)
+                    for item in root.findall(".//item")[:5]:
+                        title = item.findtext("title", "")
+                        articles.append({
+                            "title": title,
+                            "summary": title,
+                            "source": "Google News",
+                            "published": "",
+                            "api": "google_news_geo",
+                        })
+            except Exception:
+                pass
+
+        geo_risk = self._check_geopolitical_risk(articles)
+
+        result = {
+            "geo_risk_level": geo_risk,
+            "geo_risk_score": self._geo_risk_score,
+            "breaking_detected": self._breaking_detected,
+            "article_count": len(articles),
+        }
+
+        self.cache[cache_key] = result
+        self.last_fetch[cache_key] = datetime.now()
+        return result

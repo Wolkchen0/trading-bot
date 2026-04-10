@@ -80,17 +80,50 @@ STOCK_SEARCH_TERMS = {
 }
 
 # Jeopolitik anahtar kelimeler (tüm modüller kullanır)
+# Her kelime = (keyword, severity_weight) — ağırlıklı etki
 GEOPOLITICAL_KEYWORDS = {
     "bearish": [
-        "war escalat", "military strike", "missile", "strait of hormuz",
-        "oil surge", "oil spike", "sanctions", "embargo", "tariff",
-        "nuclear", "invasion", "bombing", "retaliati", "blockade",
-        "supply disruption", "trade war", "iran attack", "china taiwan",
+        # === SAVAŞ / ÇATIŞMA ===
+        "war escalat", "military strike", "missile", "airstrike",
+        "bombing", "invasion", "retaliati", "ground offensive",
+        "drone attack", "drone strike", "artillery", "shelling",
+        "ceasefire violat", "ceasefire collapse", "truce broken",
+        "ceasefire ended", "resumed attack", "resumed fighting",
+        "resumed hostil", "broke ceasefire", "conflict resum",
+        # === ORTA DOĞU ===
+        "iran attack", "iran strike", "iran retali", "houthi",
+        "strait of hormuz", "red sea attack", "hezbollah",
+        "gaza escalat", "west bank", "lebanon strike",
+        "gulf tension", "iran israel", "iran nuclear",
+        # === ÇİN / ASYA ===
+        "china taiwan", "taiwan strait", "south china sea",
+        "north korea", "korean peninsula", "china sanction",
+        # === UKRAYNA / RUSYA ===
+        "ukraine escalat", "russia attack", "nato escalat",
+        "nuclear threat", "nuclear weapon", "tactical nuke",
+        # === ENERJİ ===
+        "oil surge", "oil spike", "oil supply cut", "opec cut",
+        "pipeline attack", "energy crisis", "gas shortage",
+        "supply disruption", "blockade", "embargo",
+        # === EKONOMİK SAVAŞ ===
+        "sanctions", "tariff", "trade war", "export ban",
+        "chip ban", "tech ban", "economic warfare",
+        # === FİNANSAL KRİZ ===
         "recession", "debt default", "bank failure", "credit crisis",
+        "sovereign default", "debt ceiling", "systemic risk",
+        "contagion", "bank run", "liquidity crisis",
+        # === TERORİZM ===
+        "terror attack", "terrorist", "mass casualt", "hostage",
     ],
     "bullish": [
-        "ceasefire", "peace deal", "trade agreement", "sanctions lifted",
-        "rate cut", "stimulus", "infrastructure bill", "oil drop",
+        "ceasefire", "ceasefire agreed", "ceasefire hold",
+        "peace deal", "peace agreement", "peace talks progress",
+        "trade agreement", "trade deal", "sanctions lifted",
+        "sanctions eased", "diplomati", "negotiations resume",
+        "de-escalat", "troops withdraw", "withdrawal",
+        "rate cut", "stimulus", "infrastructure bill",
+        "oil drop", "oil price fall", "opec increase",
+        "ceasefire extended", "hostage release", "prisoner swap",
     ],
 }
 
