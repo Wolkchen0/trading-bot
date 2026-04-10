@@ -94,6 +94,9 @@ class StockNewsAnalyzer:
         self._last_geo_risk = "NORMAL"
         self._geo_risk_score = 0
         self._breaking_detected = False
+        self._marketaux_daily_calls = 0
+        self._marketaux_daily_reset = datetime.now().date()
+        self._marketaux_max_daily = 50  # Free tier: 100/gun, biz 50 ile sinirlariz
 
         # FinBERT veya VADER başlat
         if FINBERT_AVAILABLE:
@@ -142,14 +145,21 @@ class StockNewsAnalyzer:
             av_articles = self._fetch_alpha_vantage_news(symbol)
             articles.extend(av_articles)
 
-        # Marketaux'den haber çek
-        if self.marketaux_token:
-            mx_articles = self._fetch_marketaux_news(symbol)
-            articles.extend(mx_articles)
-
-        # Google News RSS (ücretsiz, gerçek zamanlı)
+        # Google News RSS (ucretsiz, gercek zamanli — BIRINCIL KAYNAK)
         gn_articles = self._fetch_google_news(symbol)
         articles.extend(gn_articles)
+
+        # Marketaux (YEDEK — sadece Google News bos donerse, gunluk limit var)
+        if self.marketaux_token and len(gn_articles) == 0:
+            if self._marketaux_daily_reset != datetime.now().date():
+                self._marketaux_daily_calls = 0
+                self._marketaux_daily_reset = datetime.now().date()
+            if self._marketaux_daily_calls < self._marketaux_max_daily:
+                mx_articles = self._fetch_marketaux_news(symbol)
+                articles.extend(mx_articles)
+                self._marketaux_daily_calls += 1
+            else:
+                logger.debug(f"  Marketaux gunluk limit ({self._marketaux_max_daily}) doldu, atlaniyor")
 
         # Analiz et
         if not articles:

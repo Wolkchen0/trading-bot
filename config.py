@@ -314,6 +314,60 @@ STOCK_CONFIG = {
 }
 
 # ============================================================
+# SHORT SELLING AYARLARI
+# ============================================================
+SHORT_CONFIG = {
+    # === ANA KONTROL ===
+    "short_enabled": True,               # Short sistemi aktif
+    "short_paper_only": True,            # Sadece paper'da short (canli icin False yap)
+
+    # === POZISYON (backtest: 25 SL cok fazla → kucult) ===
+    "short_max_positions": 1,            # Max 1 acik short (2 cok riskli)
+    "short_max_position_pct": 0.15,      # %15 sermaye (onceki: %20)
+    "short_max_position_usd": 100,       # Max $100/short (onceki: $150)
+    "short_max_exposure_pct": 0.25,      # %25 toplam (onceki: %40)
+
+    # === STOP / PROFIT (ters yon) ===
+    "short_stop_loss_pct": 0.04,         # %4 stop (once: %5, daha siki)
+    "short_stop_loss_max_pct": 0.06,     # %6 max stop
+    "short_take_profit_pct": 0.06,       # %6 take-profit
+    "short_trailing_stop_pct": 0.035,    # %3.5 trailing (once: %4)
+    "short_partial_profit_pct": 0.04,    # %4'de yarisini cover
+
+    # === SINYAL ESIKLERI (backtest: 35 cok dusuk, cok fazla short aciyordu) ===
+    "short_min_confidence": 45,          # 35→45 (daha secici)
+    "short_min_sell_score": 45,          # 35→45
+    "short_atr_stop_multiplier": 2.0,
+
+    # === SQUEEZE KORUMASI ===
+    "short_squeeze_protection": True,
+    "squeeze_volume_threshold": 3.0,
+    "squeeze_price_threshold": 0.05,
+    "squeeze_consecutive_days": 3,
+
+    # === KARA LISTE (backtest sonucu genisletildi) ===
+    "short_blacklist": [
+        "GME", "AMC",                    # Meme stocks
+        "RIVN", "LCID",                  # Dusuk float
+        "MARA", "RIOT",                  # Kripto/volatil
+        "NVDA",                          # AI boom — short yapilamaz
+        "AMD",                           # AI chip — guclu uptrend
+        "SMCI",                          # AI server — cok volatil
+    ],
+
+    # === FILTRELER ===
+    "short_ema200_gate": True,
+    "short_earnings_gate": True,
+    "short_volume_min_ratio": 1.5,
+    "short_max_rsi": 75,
+
+    # === BREAK-EVEN ===
+    "short_breakeven_enabled": True,
+    "short_breakeven_trigger_pct": 0.02,  # %2'de breakeven (once: %2.5)
+    "short_breakeven_offset_pct": 0.003,
+}
+
+# ============================================================
 # ZAMANLAMA AYARLARI (US Eastern Time)
 # ============================================================
 SCHEDULE_CONFIG = {

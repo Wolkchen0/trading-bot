@@ -296,8 +296,8 @@ class TechnicalAnalyzer:
         if buy_score >= 45:
             signal = "BUY"
             confidence = min(buy_score, 100)
-        elif sell_score >= 40:
-            signal = "SELL"
+        elif sell_score >= 45:
+            signal = "SHORT"  # Guclu dusus sinyali (45+)
             confidence = min(sell_score, 100)
         else:
             signal = "HOLD"
@@ -306,6 +306,8 @@ class TechnicalAnalyzer:
         return {
             "signal": signal,
             "confidence": confidence,
+            "sell_score": sell_score,
+            "buy_score": buy_score,
             "reasons": reasons,
             "price": current_price,
             "rsi": rsi,

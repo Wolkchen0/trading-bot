@@ -42,7 +42,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 # Config
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE,
-    get_base_url, STOCK_CONFIG, STOCK_IDS, STOCK_SEARCH_TERMS,
+    get_base_url, STOCK_CONFIG, SHORT_CONFIG, STOCK_IDS, STOCK_SEARCH_TERMS,
     SECTOR_MAP,
 )
 
@@ -54,6 +54,7 @@ from core.earnings_calendar import EarningsCalendar
 from core.agent_coordinator import AgentCoordinator
 from core.analyzer import TechnicalAnalyzer
 from core.executor import OrderExecutor
+from core.short_executor import ShortExecutor
 from core.position_manager import PositionManager
 from core.trade_gates import TradeGates
 from core.news_analyzer import StockNewsAnalyzer
@@ -138,12 +139,13 @@ class StockBot:
 
         # Durum değişkenleri
         self.positions = {}
+        self.short_positions = {}  # SHORT pozisyonlar
         self.last_trade_time = {}
         self.trades_today = []
         self.sell_cooldown = {}
         self.consecutive_errors = 0
         self._consecutive_losses = 0
-        self._symbol_consecutive_losses = {}  # Hisse bazlı ardışık zarar
+        self._symbol_consecutive_losses = {}  # Hisse bazli ardisik zarar
         self._daily_buys_count = 0
         self._last_status_time = datetime.min
         self._heartbeat_counter = 0
@@ -160,6 +162,7 @@ class StockBot:
         self.earnings_calendar = EarningsCalendar()
         self.coordinator = AgentCoordinator()
         self.executor = OrderExecutor(self)
+        self.short_executor = ShortExecutor(self)  # SHORT executor
         self.position_manager = PositionManager(self)
         self.trade_gates = TradeGates(self)
         self.news_analyzer = StockNewsAnalyzer()
@@ -277,6 +280,13 @@ class StockBot:
 
                 # Pozisyon yönetimi (her döngüde)
                 self._manage_positions(config)
+
+                # Short pozisyon yonetimi (her dongude)
+                if SHORT_CONFIG.get("short_enabled", False):
+                    try:
+                        self.position_manager.manage_short_positions(config, SHORT_CONFIG)
+                    except Exception as e:
+                        logger.debug(f"  Short pozisyon yonetim hatasi: {e}")
 
                 # Güvenli bölge kontrolü
                 if not market_status["is_safe_zone"]:
@@ -416,7 +426,7 @@ class StockBot:
     # ============================================================
 
     def _analyze_and_trade(self, symbol: str, config: Dict):
-        """Tek bir hisseyi analiz et ve gerekirse işlem yap."""
+        """Tek bir hisseyi analiz et ve gerekirse islem yap (LONG veya SHORT)."""
         try:
             # Teknik analiz
             analysis = self._get_technical_analysis(symbol, config)
@@ -426,6 +436,7 @@ class StockBot:
             # Multi-agent karar
             decision = self._get_agent_decision(symbol, analysis, config)
 
+            # === LONG (BUY) ===
             if decision["signal"] == "BUY" and decision["confidence"] >= config.get("min_confidence_score", 50):
                 # Sektör rotasyonu kontrolü (VIX bazlı)
                 if not self.sector_rotator.should_buy(symbol):
@@ -437,11 +448,28 @@ class StockBot:
                 if passed:
                     analysis["confidence"] = decision["confidence"]
                     analysis["reasons"] = [decision["reasoning"]]
-                    # Sektör rotasyonu ağırlık çarpanı
                     analysis["sector_weight"] = self.sector_rotator.get_weight_multiplier(symbol)
                     self.executor.execute_buy(symbol, analysis, config)
                 else:
                     logger.debug(f"  {symbol} GATE BLOK: {block_reason}")
+
+            # === SHORT ===
+            elif (decision["signal"] == "SHORT"
+                  and SHORT_CONFIG.get("short_enabled", False)
+                  and decision["confidence"] >= SHORT_CONFIG.get("short_min_confidence", 35)):
+
+                # Zaten short pozisyonumuz var mi?
+                if symbol in self.short_positions:
+                    return
+
+                # Zaten long pozisyonumuz var mi? (ayni anda long+short yapma)
+                if symbol in self.positions:
+                    return
+
+                logger.info(f"  🔻 {symbol} SHORT sinyal: Guven={decision['confidence']:.0f} | {decision.get('reasoning', '')}")
+                analysis["confidence"] = decision["confidence"]
+                analysis["reasons"] = [decision.get("reasoning", "SHORT")]
+                self.short_executor.execute_short(symbol, analysis, config, SHORT_CONFIG)
 
         except Exception as e:
             logger.debug(f"  {symbol} analiz hatası: {e}")

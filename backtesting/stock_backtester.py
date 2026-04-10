@@ -34,7 +34,7 @@ from ta.trend import EMAIndicator, MACD
 from ta.volatility import BollingerBands, AverageTrueRange
 
 from utils.logger import logger
-from config import STOCK_CONFIG, SECTOR_MAP, STOCK_SEARCH_TERMS
+from config import STOCK_CONFIG, SHORT_CONFIG, SECTOR_MAP, STOCK_SEARCH_TERMS
 
 
 # ============================================================
@@ -93,13 +93,14 @@ class StockBacktester:
         self.capital = initial_capital
         self.symbols = symbols or DEFAULT_SYMBOLS
         self.positions = {}
+        self.short_positions = {}  # SHORT pozisyonlar
         self.trades = []
         self.equity_curve = []
         self.daily_equity = {}
         self.total_fees = 0.0
         self.last_trade_bar = {}
         self._symbol_consecutive_losses = {}
-        logger.info(f"StockBacktester başlatıldı — Sermaye: ${initial_capital:,.2f} | {len(self.symbols)} hisse")
+        logger.info(f"StockBacktester baslatildi | Sermaye: ${initial_capital:,.2f} | {len(self.symbols)} hisse")
 
     def _fetch_data(self, symbol: str, days: int = 90) -> pd.DataFrame:
         """yfinance'dan günlük veri çeker."""
@@ -349,8 +350,8 @@ class StockBacktester:
         if buy_score >= 25:
             signal = "BUY"
             confidence = min(buy_score, 100)
-        elif sell_score >= 25:
-            signal = "SELL"
+        elif sell_score >= 45:
+            signal = "SHORT"  # Short pozisyon sinyali (45+ = guclu dusus beklentisi)
             confidence = min(sell_score, 100)
         else:
             signal = "HOLD"
@@ -646,7 +647,122 @@ class StockBacktester:
                     })
                     open_count += 1
 
-        # Kalan pozisyonları kapat
+            # === SHORT POZISYON YONETIMI ===
+            short_sc = SHORT_CONFIG
+            shorts_to_close = []
+            for sym, pos in self.short_positions.items():
+                if sym not in current_prices:
+                    continue
+                price = current_prices[sym]
+                entry = pos["entry_price"]
+                # SHORT P&L: fiyat DUSTUYSE kar
+                pnl_pct = (entry - price) / entry
+
+                # Lowest price tracking (ters trailing)
+                if price < pos.get("lowest_price", entry):
+                    pos["lowest_price"] = price
+                lowest = pos.get("lowest_price", entry)
+                trailing_rise = (price - lowest) / lowest if lowest > 0 else 0
+
+                # Short break-even
+                if pnl_pct >= short_sc.get("short_breakeven_trigger_pct", 0.025) and not pos.get("breakeven_set", False):
+                    pos["stop_loss_pct"] = short_sc.get("short_breakeven_offset_pct", 0.003)
+                    pos["breakeven_set"] = True
+
+                pos_sl = pos.get("stop_loss_pct", short_sc["short_stop_loss_pct"])
+
+                # Stop-loss (fiyat YUKARI)
+                if pnl_pct <= -pos_sl:
+                    shorts_to_close.append((sym, "SHORT_STOP_LOSS", price, pnl_pct))
+                # Take-profit (fiyat ASAGI)
+                elif pnl_pct >= short_sc["short_take_profit_pct"]:
+                    shorts_to_close.append((sym, "SHORT_TAKE_PROFIT", price, pnl_pct))
+                # Trailing stop
+                elif pnl_pct > 0.01 and trailing_rise >= short_sc["short_trailing_stop_pct"]:
+                    shorts_to_close.append((sym, "SHORT_TRAILING", price, pnl_pct))
+
+            # Short kapanislari uygula
+            for sym, reason, price, pnl_pct in shorts_to_close:
+                pos = self.short_positions[sym]
+                # Short kar: (entry - exit) * qty
+                remaining_pnl = (pos["entry_price"] - price) * pos["qty"]
+                total_pnl = remaining_pnl + pos.get("partial_pnl_usd", 0)
+                self.capital += pos["qty"] * pos["entry_price"] + total_pnl  # Margin geri + kar/zarar
+                total_sells += 1
+                sector = SECTOR_MAP.get(sym, "Unknown")
+                self.trades.append({
+                    "action": "COVER", "symbol": sym, "sector": sector,
+                    "price": price, "qty": pos["qty"],
+                    "entry_price": pos["entry_price"],
+                    "pnl_usd": round(total_pnl, 2),
+                    "pnl_pct": round(pnl_pct * 100, 2),
+                    "reason": reason,
+                    "time": str(current_time),
+                })
+                del self.short_positions[sym]
+
+            # === YENi SHORT SINYALLERI ===
+            short_count = len(self.short_positions)
+            for sym, df in all_data.items():
+                if sym in self.short_positions or sym in self.positions:
+                    continue
+                if short_count >= short_sc.get("short_max_positions", 2):
+                    break
+                if sym in short_sc.get("short_blacklist", []):
+                    continue
+
+                last_bar = self.last_trade_bar.get(f"short_{sym}", 0)
+                if bar_idx - last_bar < BACKTEST_CONFIG["min_trade_interval_bars"]:
+                    continue
+
+                mask = df.index <= current_time
+                available = df[mask]
+                if len(available) < 50:
+                    continue
+
+                analysis = self._analyze(available.tail(250))
+                total_signals += 1
+
+                if analysis["signal"] == "SHORT" and analysis["confidence"] >= short_sc.get("short_min_confidence", 35):
+                    price = analysis["price"]
+                    max_invest = min(
+                        current_equity * short_sc.get("short_max_position_pct", 0.20),
+                        short_sc.get("short_max_position_usd", 150),
+                    )
+                    if max_invest < 10:
+                        continue
+
+                    qty = int(max_invest / price) if price > 0 else 0
+                    if qty < 1:
+                        qty = round(max_invest / price, 4)
+                    if qty * price < 1:
+                        continue
+
+                    # Margin: short icin sermaye ayir
+                    if self.capital < qty * price:
+                        continue
+
+                    self.capital -= qty * price  # Margin olarak tut
+                    total_buys += 1
+                    sector = SECTOR_MAP.get(sym, "Unknown")
+                    self.short_positions[sym] = {
+                        "entry_price": price, "qty": qty,
+                        "lowest_price": price, "partial_covered": False,
+                        "entry_time": str(current_time),
+                        "stop_loss_pct": short_sc["short_stop_loss_pct"],
+                    }
+                    self.last_trade_bar[f"short_{sym}"] = bar_idx
+                    self.trades.append({
+                        "action": "SHORT", "symbol": sym, "sector": sector,
+                        "price": price, "qty": qty,
+                        "invest": round(qty * price, 2),
+                        "confidence": analysis["confidence"],
+                        "reasons": ", ".join(analysis["reasons"]),
+                        "time": str(current_time),
+                    })
+                    short_count += 1
+
+        # Kalan LONG pozisyonlari kapat
         for sym, pos in list(self.positions.items()):
             if sym in current_prices:
                 price = current_prices[sym]
@@ -664,10 +780,47 @@ class StockBacktester:
                 })
         self.positions.clear()
 
+        # Kalan SHORT pozisyonlari kapat
+        for sym, pos in list(self.short_positions.items()):
+            if sym in current_prices:
+                price = current_prices[sym]
+                pnl_usd = (pos["entry_price"] - price) * pos["qty"]
+                self.capital += pos["qty"] * pos["entry_price"] + pnl_usd
+                total_sells += 1
+                self.trades.append({
+                    "action": "COVER", "symbol": sym,
+                    "price": price, "qty": pos["qty"],
+                    "entry_price": pos["entry_price"],
+                    "pnl_usd": round(pnl_usd, 2),
+                    "pnl_pct": round((pos["entry_price"] - price) / pos["entry_price"] * 100, 2),
+                    "reason": "BACKTEST_END",
+                    "time": str(all_times[-1]),
+                })
+        self.short_positions.clear()
+
         return self._calculate_results(total_signals, total_buys, total_sells)
 
     # ============================================================
-    # SONUÇLAR
+    # PORTFOLIO VALUE
+    # ============================================================
+
+    def _get_portfolio_value(self, current_prices: Dict) -> float:
+        """Toplam portfoy degeri: nakit + long pozisyonlar + short P&L."""
+        value = self.capital
+        # Long pozisyonlar
+        for sym, pos in self.positions.items():
+            if sym in current_prices:
+                value += pos["qty"] * current_prices[sym]
+        # Short pozisyonlar (margin + unrealized P&L)
+        for sym, pos in self.short_positions.items():
+            if sym in current_prices:
+                # Margin zaten capital'dan dusuldu, kar/zarar ekle
+                unrealized = (pos["entry_price"] - current_prices[sym]) * pos["qty"]
+                value += pos["qty"] * pos["entry_price"] + unrealized
+        return value
+
+    # ============================================================
+    # SONUCLAR
     # ============================================================
 
     def _calculate_results(self, total_signals, total_buys, total_sells) -> Dict:
@@ -675,7 +828,10 @@ class StockBacktester:
         total_return = final_equity - self.initial_capital
         total_return_pct = (total_return / self.initial_capital) * 100
 
-        sell_trades = [t for t in self.trades if t["action"] == "SELL" and "pnl_usd" in t]
+        # Hem SELL (long cikis) hem COVER (short cikis) islemi
+        sell_trades = [t for t in self.trades if t["action"] in ("SELL", "COVER") and "pnl_usd" in t]
+        long_trades = [t for t in self.trades if t["action"] == "SELL" and "pnl_usd" in t]
+        short_trades = [t for t in self.trades if t["action"] == "COVER" and "pnl_usd" in t]
         wins = [t for t in sell_trades if t["pnl_usd"] > 0]
         losses = [t for t in sell_trades if t["pnl_usd"] <= 0]
 
@@ -738,6 +894,10 @@ class StockBacktester:
             "total_buys": total_buys,
             "total_sells": total_sells,
             "total_trades": len(sell_trades),
+            "long_trades": len(long_trades),
+            "short_trades": len(short_trades),
+            "long_wins": len([t for t in long_trades if t["pnl_usd"] > 0]),
+            "short_wins": len([t for t in short_trades if t["pnl_usd"] > 0]),
             "wins": len(wins),
             "losses": len(losses),
             "win_rate": round(win_rate, 1),
@@ -770,10 +930,14 @@ class StockBacktester:
         logger.info(f"  Getiri:          {marker}${r['total_return_usd']:,.2f} ({marker}{r['total_return_pct']:.1f}%)")
         logger.info(f"  {'-'*40}")
         logger.info(f"  Taranan Sinyal:  {r['total_signals_checked']}")
-        logger.info(f"  Toplam Alış:     {r['total_buys']}")
-        logger.info(f"  Toplam Satış:    {r['total_sells']}")
-        logger.info(f"  Kapanan İşlem:   {r['total_trades']}")
-        logger.info(f"  Kazanç / Kayıp:  {r['wins']}W / {r['losses']}L")
+        logger.info(f"  Toplam Giris:    {r['total_buys']}")
+        logger.info(f"  Toplam Cikis:    {r['total_sells']}")
+        logger.info(f"  Kapanan Islem:   {r['total_trades']}")
+        logger.info(f"  {'-'*40}")
+        logger.info(f"  LONG:  {r.get('long_trades', 0)} islem ({r.get('long_wins', 0)}W)")
+        logger.info(f"  SHORT: {r.get('short_trades', 0)} islem ({r.get('short_wins', 0)}W)")
+        logger.info(f"  {'-'*40}")
+        logger.info(f"  Kazanc / Kayip:  {r['wins']}W / {r['losses']}L")
         logger.info(f"  Win Rate:        {r['win_rate']:.1f}%")
         logger.info(f"  {'-'*40}")
         logger.info(f"  Ort. Kazanç:     ${r['avg_win_usd']:,.2f} ({r['avg_win_pct']:+.2f}%)")
