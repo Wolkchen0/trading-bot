@@ -14,6 +14,7 @@ load_dotenv()
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # "paper" veya "live"
+BOT_MODE = os.getenv("BOT_MODE", "both")  # "long_only", "short_only", "both"
 
 # Haber & Veri API'leri
 ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")

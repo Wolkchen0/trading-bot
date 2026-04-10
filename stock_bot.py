@@ -41,7 +41,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 
 # Config
 from config import (
-    ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE,
+    ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE, BOT_MODE,
     get_base_url, STOCK_CONFIG, SHORT_CONFIG, STOCK_IDS, STOCK_SEARCH_TERMS,
     SECTOR_MAP,
 )
@@ -206,14 +206,16 @@ class StockBot:
         self._load_position_metadata()
 
         mode_str = "PAPER" if is_paper else "🔴 LIVE"
+        bot_mode_str = {"long_only": "📈 LONG ONLY", "short_only": "📉 SHORT ONLY", "both": "📊 LONG + SHORT"}.get(BOT_MODE, BOT_MODE)
         logger.info("=" * 60)
-        logger.info(f"  STOCK TRADING BOT BAŞLATILDI")
-        logger.info(f"  Mod: {mode_str} | Equity: ${equity:,.2f}")
+        logger.info(f"  STOCK TRADING BOT BASLATILDI")
+        logger.info(f"  Mod: {mode_str} | Bot: {bot_mode_str}")
+        logger.info(f"  Equity: ${equity:,.2f}")
         logger.info(f"  Max pozisyon: ${self.max_pos_usd} | Floor: ${self.equity_floor:,.2f}")
         logger.info(f"  Hisse havuzu: {len(config['symbols'])} hisse")
-        logger.info(f"  Açık pozisyon: {len(self.positions)}")
+        logger.info(f"  Acik pozisyon: {len(self.positions)} long | {len(self.short_positions)} short")
         logger.info(f"  PDT: {'EXEMPT' if equity >= 25000 else f'ACTIVE (max 2 DT/hafta)'}")
-        logger.info(f"  KillSwitch: AKTİF | WashSale: AKTİF")
+        logger.info(f"  KillSwitch: AKTIF | WashSale: AKTIF")
         logger.info("=" * 60)
 
     # ============================================================
@@ -278,11 +280,12 @@ class StockBot:
                     if self.kill_switch.check_api_error(e):
                         continue
 
-                # Pozisyon yönetimi (her döngüde)
-                self._manage_positions(config)
+                # Pozisyon yonetimi (her dongude)
+                if BOT_MODE in ("long_only", "both"):
+                    self._manage_positions(config)
 
                 # Short pozisyon yonetimi (her dongude)
-                if SHORT_CONFIG.get("short_enabled", False):
+                if BOT_MODE in ("short_only", "both") and SHORT_CONFIG.get("short_enabled", False):
                     try:
                         self.position_manager.manage_short_positions(config, SHORT_CONFIG)
                     except Exception as e:
@@ -426,7 +429,9 @@ class StockBot:
     # ============================================================
 
     def _analyze_and_trade(self, symbol: str, config: Dict):
-        """Tek bir hisseyi analiz et ve gerekirse islem yap (LONG veya SHORT)."""
+        """Tek bir hisseyi analiz et ve gerekirse islem yap (LONG veya SHORT).
+        BOT_MODE: 'long_only' | 'short_only' | 'both'
+        """
         try:
             # Teknik analiz
             analysis = self._get_technical_analysis(symbol, config)
@@ -436,8 +441,10 @@ class StockBot:
             # Multi-agent karar
             decision = self._get_agent_decision(symbol, analysis, config)
 
-            # === LONG (BUY) ===
-            if decision["signal"] == "BUY" and decision["confidence"] >= config.get("min_confidence_score", 50):
+            # === LONG (BUY) — BOT_MODE: 'long_only' veya 'both' ===
+            if (decision["signal"] == "BUY"
+                    and BOT_MODE in ("long_only", "both")
+                    and decision["confidence"] >= config.get("min_confidence_score", 50)):
                 # Sektör rotasyonu kontrolü (VIX bazlı)
                 if not self.sector_rotator.should_buy(symbol):
                     logger.debug(f"  {symbol} SEKTÖR ROTASYON BLOK: {self.sector_rotator.current_regime} rejiminde kaçınılıyor")
@@ -453,8 +460,9 @@ class StockBot:
                 else:
                     logger.debug(f"  {symbol} GATE BLOK: {block_reason}")
 
-            # === SHORT ===
+            # === SHORT — BOT_MODE: 'short_only' veya 'both' ===
             elif (decision["signal"] == "SHORT"
+                  and BOT_MODE in ("short_only", "both")
                   and SHORT_CONFIG.get("short_enabled", False)
                   and decision["confidence"] >= SHORT_CONFIG.get("short_min_confidence", 35)):
 
