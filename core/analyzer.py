@@ -283,6 +283,21 @@ class TechnicalAnalyzer:
         if trend == "DOWNTREND":
             sell_score += 10
 
+        # === YENİ: EMA200 ALTI = güçlü düşüş trendi ===
+        if not above_ema200:
+            sell_score += 15
+            reasons.append("EMA200-")
+
+        # === YENİ: Negatif momentum (5 günde %3+ düşüş) ===
+        if price_change_5 < -3:
+            sell_score += 10
+            reasons.append(f"Mom-:{price_change_5:.1f}%")
+
+        # === YENİ: Yüksek hacimle düşüş (panik satışı) ===
+        if volume_ratio > 1.5 and price_change_1 < -1:
+            sell_score += 10
+            reasons.append("Vol_Sell")
+
         # === MOMENTUM / BREAKOUT ===
         if trend == "UPTREND" and 40 <= rsi <= 65:
             if momentum_up and volume_ok:
@@ -291,6 +306,12 @@ class TechnicalAnalyzer:
             elif price_change_5 > 2.0:
                 buy_score += 10
                 reasons.append(f"Breakout:{price_change_5:.1f}%")
+
+        # === YENİ: DOWNTREND BREAKDOWN ===
+        if trend == "DOWNTREND" and rsi < 45:
+            if not momentum_up and volume_ratio > 1.3:
+                sell_score += 10
+                reasons.append("Breakdown")
 
         # === KARAR ===
         if buy_score >= 45:

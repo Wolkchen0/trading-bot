@@ -222,6 +222,7 @@ class RiskAgent:
     def analyze(self, risk_data: Dict) -> AgentVote:
         reasons = []
         risk_score = 0
+        short_boost = 0  # VIX bazli short guven artisi
         
         # Günlük kayıp kontrolü
         daily_pnl_pct = risk_data.get("daily_pnl_pct", 0)
@@ -246,15 +247,18 @@ class RiskAgent:
         vix = risk_data.get("vix", 0)
         if vix > 35:
             risk_score -= 25
-            reasons.append(f"VIX PANİK: {vix:.1f}")
+            short_boost += 20  # Panik = short icin cok iyi
+            reasons.append(f"VIX PANİK: {vix:.1f} (SHORT+{short_boost})")
         elif vix > 25:
             risk_score -= 15
-            reasons.append(f"VIX yüksek: {vix:.1f}")
+            short_boost += 10  # Yuksek korku = short firsati
+            reasons.append(f"VIX yüksek: {vix:.1f} (SHORT+{short_boost})")
         
         # Jeopolitik risk (petrol, savaş haberleri)
         geo_risk = risk_data.get("geopolitical_risk", "NORMAL")
         if geo_risk == "HIGH":
             risk_score -= 20
+            short_boost += 10
             reasons.append("⚠️ Jeopolitik risk YÜKSEK")
         elif geo_risk == "ELEVATED":
             risk_score -= 10
@@ -282,10 +286,12 @@ class RiskAgent:
         
         confidence = min(abs(risk_score) + 30, 100)
         
-        return AgentVote(
+        vote = AgentVote(
             self.NAME, signal, confidence,
             " | ".join(reasons) if reasons else "Risk seviyeleri normal"
         )
+        vote.short_boost = short_boost  # Coordinator'a ilet
+        return vote
 
 
 class AgentCoordinator:
@@ -401,6 +407,13 @@ class AgentCoordinator:
             confidence *= 1.2  # Çoğunluk = daha güvenli
         if risk_veto:
             confidence *= 0.5  # Veto = güven düşer
+
+        # VIX bazli short boost (SELL sinyalinde guven artisi)
+        short_boost = getattr(risk_vote, "short_boost", 0)
+        if final_signal == "SELL" and short_boost > 0:
+            confidence += short_boost
+            logger.info(f"  📉 {symbol} VIX SHORT BOOST: +{short_boost} puan")
+
         confidence = min(confidence, 100)
         
         # 8. Gerekçe oluştur

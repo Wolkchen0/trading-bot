@@ -43,7 +43,7 @@ from ta.volatility import BollingerBands, AverageTrueRange
 from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE, BOT_MODE,
     get_base_url, STOCK_CONFIG, SHORT_CONFIG, STOCK_IDS, STOCK_SEARCH_TERMS,
-    SECTOR_MAP,
+    SECTOR_MAP, MARKET_REGIME_CONFIG,
 )
 
 # Core modüller
@@ -151,6 +151,8 @@ class StockBot:
         self._heartbeat_counter = 0
         self._morning_scan_done = False
         self._morning_scan_date = None
+        self._market_regime = "UNKNOWN"   # BULL / BEAR / UNKNOWN
+        self._regime_check_time = datetime.min
         self._daily_reset_date = None
 
         # Core modüller
@@ -279,6 +281,9 @@ class StockBot:
                 except Exception as e:
                     if self.kill_switch.check_api_error(e):
                         continue
+
+                # Piyasa rejim tespiti (her 30 dk)
+                self._update_market_regime()
 
                 # Pozisyon yonetimi (her dongude)
                 if BOT_MODE in ("long_only", "both"):
@@ -425,6 +430,56 @@ class StockBot:
         self._morning_scan_date = date.today()
 
     # ============================================================
+    # PİYASA REJİM TESPİTİ
+    # ============================================================
+
+    def _update_market_regime(self):
+        """SPY EMA200 bazli piyasa rejim tespiti. Her 30 dakikada bir guncellenir."""
+        if not MARKET_REGIME_CONFIG.get("enabled", True):
+            return
+
+        # 30 dakikada bir kontrol et
+        now = datetime.now()
+        if (now - self._regime_check_time).total_seconds() < 1800:
+            return
+
+        self._regime_check_time = now
+        benchmark = MARKET_REGIME_CONFIG.get("benchmark_symbol", "SPY")
+
+        try:
+            df = self.get_stock_bars(benchmark, days=250)
+            if df.empty or len(df) < 50:
+                return
+
+            close = df["close"]
+            price = float(close.iloc[-1])
+
+            ema_period = MARKET_REGIME_CONFIG.get("ema_period", 200)
+            ema_period = min(ema_period, len(close) - 1)
+            ema200 = EMAIndicator(close, window=ema_period).ema_indicator().iloc[-1]
+
+            old_regime = self._market_regime
+
+            if price < ema200:
+                self._market_regime = "BEAR"
+            else:
+                self._market_regime = "BULL"
+
+            if old_regime != self._market_regime:
+                emoji = "🐻" if self._market_regime == "BEAR" else "🐂"
+                logger.info(
+                    f"  {emoji} PIYASA REJIM DEGISIMI: {old_regime} → {self._market_regime} "
+                    f"| SPY=${price:.2f} vs EMA{ema_period}=${ema200:.2f}"
+                )
+            else:
+                logger.debug(
+                    f"  Rejim: {self._market_regime} | SPY=${price:.2f} vs EMA{ema_period}=${ema200:.2f}"
+                )
+
+        except Exception as e:
+            logger.debug(f"  Rejim tespiti hatasi: {e}")
+
+    # ============================================================
     # HİSSE ANALİZİ VE İŞLEM
     # ============================================================
 
@@ -441,10 +496,37 @@ class StockBot:
             # Multi-agent karar
             decision = self._get_agent_decision(symbol, analysis, config)
 
+            # Ters ETF & Endeks filtresi
+            _inverse_etfs = MARKET_REGIME_CONFIG.get("inverse_etf_symbols", [])
+            _index_symbols = MARKET_REGIME_CONFIG.get("index_symbols", [])
+            _is_inverse_etf = symbol in _inverse_etfs
+            _is_index = symbol in _index_symbols
+
+            # Endeksler asla trade edilmez (sadece rejim tespiti icin)
+            if _is_index:
+                return
+
+            # Rejim bazli guven ayarlamasi
+            effective_buy_conf = config.get("min_confidence_score", 50)
+            effective_short_conf = SHORT_CONFIG.get("short_min_confidence", 45)
+
+            if self._market_regime == "BEAR":
+                # Bear modda: BUY icin daha yuksek esik, SHORT icin daha dusuk
+                effective_buy_conf += MARKET_REGIME_CONFIG.get("bear_buy_conf_increase", 10)
+                effective_short_conf -= MARKET_REGIME_CONFIG.get("bear_short_conf_reduction", 10)
+
+            # Ters ETF'ler sadece BEAR modda BUY (long) olarak alinir
+            if _is_inverse_etf:
+                if self._market_regime != "BEAR":
+                    return  # Bull/Unknown modda ters ETF alma
+                # Ters ETF icin short sinyal ALMA (zaten ters)
+                if decision["signal"] == "SHORT":
+                    return
+
             # === LONG (BUY) — BOT_MODE: 'long_only' veya 'both' ===
             if (decision["signal"] == "BUY"
                     and BOT_MODE in ("long_only", "both")
-                    and decision["confidence"] >= config.get("min_confidence_score", 50)):
+                    and decision["confidence"] >= effective_buy_conf):
                 # Sektör rotasyonu kontrolü (VIX bazlı)
                 if not self.sector_rotator.should_buy(symbol):
                     logger.debug(f"  {symbol} SEKTÖR ROTASYON BLOK: {self.sector_rotator.current_regime} rejiminde kaçınılıyor")
@@ -456,6 +538,8 @@ class StockBot:
                     analysis["confidence"] = decision["confidence"]
                     analysis["reasons"] = [decision["reasoning"]]
                     analysis["sector_weight"] = self.sector_rotator.get_weight_multiplier(symbol)
+                    if _is_inverse_etf:
+                        analysis["reasons"].append("🐻 BEAR_MODE_INVERSE_ETF")
                     self.executor.execute_buy(symbol, analysis, config)
                 else:
                     logger.debug(f"  {symbol} GATE BLOK: {block_reason}")
@@ -464,7 +548,7 @@ class StockBot:
             elif (decision["signal"] == "SHORT"
                   and BOT_MODE in ("short_only", "both")
                   and SHORT_CONFIG.get("short_enabled", False)
-                  and decision["confidence"] >= SHORT_CONFIG.get("short_min_confidence", 35)):
+                  and decision["confidence"] >= effective_short_conf):
 
                 # Zaten short pozisyonumuz var mi?
                 if symbol in self.short_positions:
@@ -474,9 +558,11 @@ class StockBot:
                 if symbol in self.positions:
                     return
 
-                logger.info(f"  🔻 {symbol} SHORT sinyal: Guven={decision['confidence']:.0f} | {decision.get('reasoning', '')}")
+                logger.info(f"  🔻 {symbol} SHORT sinyal: Guven={decision['confidence']:.0f} | Rejim={self._market_regime} | {decision.get('reasoning', '')}")
                 analysis["confidence"] = decision["confidence"]
                 analysis["reasons"] = [decision.get("reasoning", "SHORT")]
+                if self._market_regime == "BEAR":
+                    analysis["reasons"].append("🐻 BEAR_MODE")
                 self.short_executor.execute_short(symbol, analysis, config, SHORT_CONFIG)
 
         except Exception as e:

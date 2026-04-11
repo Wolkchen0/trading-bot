@@ -67,6 +67,13 @@ STOCK_IDS = {
     "MARA": "Marathon Digital",
     "RIOT": "Riot Platforms",
     "SMCI": "Super Micro Computer",
+    # Ters ETF'ler (piyasa dususunde LONG alarak kar)
+    "SQQQ": "ProShares UltraPro Short QQQ",   # NASDAQ 3x ters
+    "SH": "ProShares Short S&P500",            # S&P 1x ters
+    "SPXS": "Direxion Daily S&P 3x Bear",      # S&P 3x ters
+    # Piyasa Endeksleri (rejim tespiti icin)
+    "SPY": "SPDR S&P 500 ETF",
+    "QQQ": "Invesco QQQ Trust",
 }
 
 # Hisse arama terimleri (haber & sosyal medya)
@@ -91,6 +98,13 @@ STOCK_SEARCH_TERMS = {
     "MARA": ["marathon digital", "bitcoin mining"],
     "RIOT": ["riot platforms", "crypto mining"],
     "SMCI": ["super micro", "supermicro", "ai server"],
+    # Ters ETF'ler
+    "SQQQ": ["sqqq", "short nasdaq", "bear etf", "nasdaq put"],
+    "SH": ["short sp500", "bear sp500", "market hedge"],
+    "SPXS": ["spxs", "3x bear", "sp500 short etf"],
+    # Endeksler
+    "SPY": ["spy", "sp500", "s&p 500", "market index"],
+    "QQQ": ["qqq", "nasdaq 100", "tech index"],
 }
 
 # Jeopolitik anahtar kelimeler (tüm modüller kullanır)
@@ -159,6 +173,10 @@ SECTOR_MAP = {
     "MARA": "CryptoMining", "RIOT": "CryptoMining",
     # Data / AI
     "PLTR": "Data_AI",
+    # Ters ETF'ler
+    "SQQQ": "InverseETF", "SH": "InverseETF", "SPXS": "InverseETF",
+    # Endeksler (trade edilmez, rejim tespiti icin)
+    "SPY": "Index", "QQQ": "Index",
 }
 
 # ============================================================
@@ -330,27 +348,29 @@ STOCK_CONFIG = {
 # ============================================================
 # SHORT SELLING AYARLARI
 # ============================================================
+_is_paper = TRADING_MODE == "paper"
+
 SHORT_CONFIG = {
     # === ANA KONTROL ===
     "short_enabled": True,               # Short sistemi aktif
     "short_paper_only": True,            # Sadece paper'da short (canli icin False yap)
 
-    # === POZISYON (backtest: 25 SL cok fazla → kucult) ===
-    "short_max_positions": 1,            # Max 1 acik short (2 cok riskli)
-    "short_max_position_pct": 0.15,      # %15 sermaye (onceki: %20)
-    "short_max_position_usd": 100,       # Max $100/short (onceki: $150)
-    "short_max_exposure_pct": 0.25,      # %25 toplam (onceki: %40)
+    # === POZISYON — Paper: agresif, Live: muhafazakar ===
+    "short_max_positions": 3 if _is_paper else 1,
+    "short_max_position_pct": 0.20 if _is_paper else 0.15,
+    "short_max_position_usd": 2000 if _is_paper else 100,
+    "short_max_exposure_pct": 0.40 if _is_paper else 0.25,
 
     # === STOP / PROFIT (ters yon) ===
-    "short_stop_loss_pct": 0.04,         # %4 stop (once: %5, daha siki)
+    "short_stop_loss_pct": 0.04,         # %4 stop
     "short_stop_loss_max_pct": 0.06,     # %6 max stop
     "short_take_profit_pct": 0.06,       # %6 take-profit
-    "short_trailing_stop_pct": 0.035,    # %3.5 trailing (once: %4)
+    "short_trailing_stop_pct": 0.035,    # %3.5 trailing
     "short_partial_profit_pct": 0.04,    # %4'de yarisini cover
 
-    # === SINYAL ESIKLERI (backtest: 35 cok dusuk, cok fazla short aciyordu) ===
-    "short_min_confidence": 45,          # 35→45 (daha secici)
-    "short_min_sell_score": 45,          # 35→45
+    # === SINYAL ESIKLERI — Paper: daha dusuk esik ===
+    "short_min_confidence": 40 if _is_paper else 45,
+    "short_min_sell_score": 40 if _is_paper else 45,
     "short_atr_stop_multiplier": 2.0,
 
     # === SQUEEZE KORUMASI ===
@@ -359,7 +379,7 @@ SHORT_CONFIG = {
     "squeeze_price_threshold": 0.05,
     "squeeze_consecutive_days": 3,
 
-    # === KARA LISTE (backtest sonucu genisletildi) ===
+    # === KARA LISTE — Ters ETF'ler short yapilmaz (zaten ters) ===
     "short_blacklist": [
         "GME", "AMC",                    # Meme stocks
         "RIVN", "LCID",                  # Dusuk float
@@ -367,6 +387,8 @@ SHORT_CONFIG = {
         "NVDA",                          # AI boom — short yapilamaz
         "AMD",                           # AI chip — guclu uptrend
         "SMCI",                          # AI server — cok volatil
+        "SQQQ", "SH", "SPXS",           # Ters ETF — short yapma
+        "SPY", "QQQ",                    # Endeksler — short yapma
     ],
 
     # === FILTRELER ===
@@ -377,8 +399,21 @@ SHORT_CONFIG = {
 
     # === BREAK-EVEN ===
     "short_breakeven_enabled": True,
-    "short_breakeven_trigger_pct": 0.02,  # %2'de breakeven (once: %2.5)
+    "short_breakeven_trigger_pct": 0.02,
     "short_breakeven_offset_pct": 0.003,
+}
+
+# ============================================================
+# PIYASA REJIM TESPITI (Bear/Bull Mode)
+# ============================================================
+MARKET_REGIME_CONFIG = {
+    "enabled": True,
+    "benchmark_symbol": "SPY",           # S&P 500 ETF
+    "ema_period": 200,                   # EMA200 altinda = BEAR
+    "bear_short_conf_reduction": 10,     # Bear modda short esigi -10 puan
+    "bear_buy_conf_increase": 10,        # Bear modda BUY icin +10 puan gerektir
+    "inverse_etf_symbols": ["SQQQ", "SH", "SPXS"],
+    "index_symbols": ["SPY", "QQQ"],     # Trade edilmez, sadece analiz
 }
 
 # ============================================================
