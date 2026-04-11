@@ -11,8 +11,21 @@ load_dotenv()
 # ============================================================
 # ALPACA API AYARLARI
 # ============================================================
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+# ALPACA_KEY_PREFIX: Docker Compose'dan hangi key setinin
+# kullanilacagini belirler (LIVE / PAPER / bos=fallback)
+_key_prefix = os.getenv("ALPACA_KEY_PREFIX", "")
+
+if _key_prefix == "LIVE":
+    ALPACA_API_KEY = os.getenv("ALPACA_LIVE_API_KEY", "")
+    ALPACA_SECRET_KEY = os.getenv("ALPACA_LIVE_SECRET_KEY", "")
+elif _key_prefix == "PAPER":
+    ALPACA_API_KEY = os.getenv("ALPACA_PAPER_API_KEY", "")
+    ALPACA_SECRET_KEY = os.getenv("ALPACA_PAPER_SECRET_KEY", "")
+else:
+    # Fallback: eski tekli key (lokal gelistirme icin)
+    ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+    ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+
 TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # "paper" veya "live"
 BOT_MODE = os.getenv("BOT_MODE", "both")  # "long_only", "short_only", "both"
 

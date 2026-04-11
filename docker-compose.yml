@@ -2,21 +2,17 @@ version: '3.8'
 
 services:
   # ============================================================
-  # CONTAINER 1: LIVE — Sadece LONG islemler ($500 canli para)
+  # CONTAINER 1: LIVE — Sadece LONG islemler (hedef: $500 → $2000)
   # ============================================================
   trading-live:
     build: .
+    image: trading-bot:latest
     container_name: trading-bot-live
     restart: unless-stopped
     environment:
       - TRADING_MODE=live
       - BOT_MODE=long_only
-      - ALPACA_API_KEY=${ALPACA_LIVE_API_KEY}
-      - ALPACA_SECRET_KEY=${ALPACA_LIVE_SECRET_KEY}
-      - ALPHA_VANTAGE_KEY=${ALPHA_VANTAGE_KEY:-}
-      - MARKETAUX_TOKEN=${MARKETAUX_TOKEN:-}
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALPACA_KEY_PREFIX=LIVE
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/live:/app/logs
@@ -27,21 +23,19 @@ services:
         max-file: "3"
 
   # ============================================================
-  # CONTAINER 2: PAPER — Sadece SHORT islemler ($2000 sanal)
+  # CONTAINER 2: PAPER — Long + Short (test & pratik)
   # ============================================================
   trading-short:
-    build: .
-    container_name: trading-bot-short
+    image: trading-bot:latest
+    depends_on:
+      trading-live:
+        condition: service_started
+    container_name: trading-bot-paper
     restart: unless-stopped
     environment:
       - TRADING_MODE=paper
-      - BOT_MODE=short_only
-      - ALPACA_API_KEY=${ALPACA_PAPER_API_KEY}
-      - ALPACA_SECRET_KEY=${ALPACA_PAPER_SECRET_KEY}
-      - ALPHA_VANTAGE_KEY=${ALPHA_VANTAGE_KEY:-}
-      - MARKETAUX_TOKEN=${MARKETAUX_TOKEN:-}
-      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - BOT_MODE=both
+      - ALPACA_KEY_PREFIX=PAPER
       - PYTHONUNBUFFERED=1
     volumes:
       - ./logs/short:/app/logs
