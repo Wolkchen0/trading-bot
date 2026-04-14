@@ -1,6 +1,9 @@
 """
 Compliance Module - ABD düzenleyici uyumluluk.
-PDT kuralı takibi, Wash Sale tespiti, vergi raporu dışa aktarma.
+Wash Sale tespiti, vergi raporu dışa aktarma.
+
+NOT: PDTTracker → core/pdt_tracker.py'de tanımlı (canonical versiyon).
+     Geriye uyumluluk için import redirect aşağıda.
 """
 import csv
 import json
@@ -10,134 +13,8 @@ from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from utils.logger import logger
 
-
-class PDTTracker:
-    """
-    Pattern Day Trader (PDT) kuralı takibi.
-
-    ABD kuralları:
-    - 5 iş günü içinde 4+ day trade → PDT statüsü
-    - PDT statüsünde min $25,000 bakiye zorunlu
-    - $25,000 altında: HAFTADA MAX 3 DAY TRADE
-
-    Day trade = aynı gün alıp aynı gün satma
-    Kripto için PDT kuralı GEÇERLİ DEĞİLDİR.
-    """
-
-    def __init__(self, account_equity: float, pdt_file: str = "pdt_tracker.json"):
-        self.account_equity = account_equity
-        self.pdt_file = pdt_file
-        self.day_trades: List[Dict] = self._load()
-        self.PDT_THRESHOLD = 25_000.0
-        self.MAX_DAY_TRADES_UNDER_PDT = 3  # 5 günde max 3
-        logger.info(
-            f"PDTTracker başlatıldı - Bakiye: ${account_equity:,.2f} "
-            f"({'PDT güvenli' if account_equity >= self.PDT_THRESHOLD else '⚠️ PDT LİMİTLİ'})"
-        )
-
-    def _load(self) -> List[Dict]:
-        if os.path.exists(self.pdt_file):
-            try:
-                with open(self.pdt_file, "r") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return []
-
-    def _save(self):
-        try:
-            with open(self.pdt_file, "w") as f:
-                json.dump(self.day_trades, f, indent=2, default=str)
-        except Exception as e:
-            logger.error(f"PDT kayıt hatası: {e}")
-
-    def record_day_trade(self, symbol: str, buy_time: str, sell_time: str):
-        """Day trade kaydeder (aynı gün alış-satış)."""
-        self.day_trades.append({
-            "symbol": symbol,
-            "buy_time": buy_time,
-            "sell_time": sell_time,
-            "date": date.today().isoformat(),
-        })
-        self._save()
-        remaining = self.get_remaining_day_trades()
-        logger.warning(
-            f"📋 Day trade kaydedildi: {symbol} | "
-            f"Kalan hak: {remaining} (bu hafta)"
-        )
-
-    def get_day_trades_rolling_window(self) -> int:
-        """
-        Dönen 5 iş günü penceresinde yapılan day trade sayısını hesaplar.
-        NOT: Bu takvim haftası DEĞİL, rolling 5 business day'dir.
-        Örn: Çarşamba günü yapılan işlem, sonraki Çarşamba'ya kadar pencerede kalır.
-        """
-        today = date.today()
-        # Son 9 takvim gününe bak (5 iş günü ~ max 9 takvim günü, tatil dahil)
-        lookback_start = today - timedelta(days=9)
-
-        recent = []
-        for t in self.day_trades:
-            trade_date_str = t.get("date", "")
-            if not trade_date_str:
-                continue
-            try:
-                trade_date = date.fromisoformat(trade_date_str)
-            except ValueError:
-                continue
-
-            if trade_date > today or trade_date < lookback_start:
-                continue
-
-            # trade_date ile today arasında kaç iş günü var?
-            # numpy.busday_count kullanmak yerine manuel hesapla
-            business_days = 0
-            d = trade_date
-            while d < today:
-                d += timedelta(days=1)
-                if d.weekday() < 5:  # Pazartesi=0 ... Cuma=4
-                    business_days += 1
-
-            # 5 iş günü içinde mi?
-            if business_days <= 5:
-                recent.append(t)
-
-        return len(recent)
-
-    def get_remaining_day_trades(self) -> int:
-        """Kalan day trade hakkı (rolling 5 iş günü penceresi)."""
-        if self.account_equity >= self.PDT_THRESHOLD:
-            return 999  # Sınırsız
-        used = self.get_day_trades_rolling_window()
-        return max(0, self.MAX_DAY_TRADES_UNDER_PDT - used)
-
-    def can_day_trade(self, asset_type: str = "stock") -> Tuple[bool, str]:
-        """
-        Day trade yapılıp yapılamayacağını kontrol eder.
-        Kripto için PDT kuralı geçerli değildir.
-        """
-        # Kripto PDT'den muaf
-        if asset_type == "crypto":
-            return True, "✅ Kripto: PDT kuralı yok"
-
-        # $25K üzerinde sınırsız
-        if self.account_equity >= self.PDT_THRESHOLD:
-            return True, "✅ PDT güvenli ($25K+)"
-
-        # $25K altında: haftalık limit kontrol
-        remaining = self.get_remaining_day_trades()
-        if remaining > 0:
-            return True, f"✅ Kalan day trade hakkı: {remaining}/3"
-        else:
-            return False, (
-                f"⛔ PDT LİMİTİ: Bu hafta {self.MAX_DAY_TRADES_UNDER_PDT} "
-                f"day trade hakkı doldu! Bakiye: ${self.account_equity:,.2f} "
-                f"(min $25,000 gerekli)"
-            )
-
-    def update_equity(self, equity: float):
-        self.account_equity = equity
-
+# PDTTracker geriye uyumluluk redirect'i (canonical: core/pdt_tracker.py)
+from core.pdt_tracker import PDTTracker  # noqa: F401
 
 class WashSaleTracker:
     """

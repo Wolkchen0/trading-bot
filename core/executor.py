@@ -56,23 +56,42 @@ class OrderExecutor:
                 logger.warning(f"Nakit rezerv korumasi: Cash ${cash:.2f}, Rezerv ${cash_reserve:.2f}")
                 return False
 
-            # Tier-based pozisyon boyutu
-            tier_weight = config.get("tier_weights", {}).get(
-                symbol, config.get("default_tier_weight", 0.20)
-            )
-            max_invest = min(
-                available_cash * tier_weight,
-                equity * config["max_position_pct"],
-                bot.max_pos_usd,
-            )
+            # === KELLY-ATR ADAPTİF POZİSYON BOYUTLANDIRMA ===
+            price = analysis["price"]
+
+            if hasattr(bot, 'position_sizer'):
+                sizing = bot.position_sizer.calculate_position_size(
+                    equity=equity,
+                    price=price,
+                    atr=analysis.get("atr", 0),
+                    config=config,
+                    side="LONG",
+                    consecutive_losses=getattr(bot, '_consecutive_losses', 0),
+                    market_regime=getattr(bot, '_market_regime', 'NORMAL'),
+                    sector_weight=analysis.get("sector_weight", 1.0),
+                )
+                max_invest = sizing["position_usd"]
+                if max_invest <= 0:
+                    logger.debug(f"  {symbol} PositionSizer: {sizing['reasoning']}")
+                    return False
+            else:
+                # Fallback: eski tier-based hesaplama
+                tier_weight = config.get("tier_weights", {}).get(
+                    symbol, config.get("default_tier_weight", 0.20)
+                )
+                max_invest = min(
+                    available_cash * tier_weight,
+                    equity * config["max_position_pct"],
+                    bot.max_pos_usd,
+                )
+
+            # Available cash limiti
+            max_invest = min(max_invest, available_cash)
 
             if max_invest < config.get("min_trade_value", 10):
                 logger.warning(f"Yetersiz bakiye: ${max_invest:.2f} < min ${config.get('min_trade_value', 10)}")
                 return False
 
-            price = analysis["price"]
-
-            # Hisse senedi: komisyon $0!
             qty = round(max_invest / price, 4)  # Fractional shares
 
             if qty * price < 1:
@@ -188,6 +207,22 @@ class OrderExecutor:
                     else:
                         logger.warning(f"  PDT: STOP_LOSS override — sermaye koruması öncelikli")
 
+            # Pozisyon verileri — close_position ÖNCE al (kapandıktan sonra erişilemez)
+            entry = pos.get("entry_price", 0)
+            qty = pos.get("qty", 0)
+
+            # Güncel fiyatı al ve PnL hesapla (close_position öncesi)
+            pnl_usd = 0.0
+            current_price = entry  # fallback
+            try:
+                alpaca_pos = bot.client.get_open_position(symbol)
+                current_price = float(alpaca_pos.current_price)
+                pnl_usd = float(alpaca_pos.unrealized_pl)
+            except Exception:
+                # Alpaca'dan alınamazsa manuel hesapla
+                if entry > 0 and qty > 0:
+                    pnl_usd = (current_price - entry) * qty
+
             # Bekleyen stop-loss emirlerini iptal et
             try:
                 orders = bot.client.get_orders(
@@ -219,16 +254,17 @@ class OrderExecutor:
                 pass
             bot.sell_cooldown[symbol] = datetime.now() + timedelta(seconds=cooldown_secs)
 
-            entry = pos.get("entry_price", 0)
-            qty = pos.get("qty", 0)
-
-            logger.info(f"  ✅ SELL {symbol}: {qty:.4f} | Sebep: {reason}")
+            pnl_pct = (pnl_usd / max(float(entry) * float(qty), 0.01)) * 100 if entry > 0 and qty > 0 else 0
+            logger.info(
+                f"  ✅ SELL {symbol}: {qty:.4f} @ ${current_price:,.2f} | "
+                f"P&L: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) | Sebep: {reason}"
+            )
 
             bot.positions.pop(symbol, None)
             bot.last_trade_time[symbol] = datetime.now()
             bot.trades_today.append({
-                "action": "SELL", "symbol": symbol,
-                "reason": reason, "time": datetime.now().isoformat(),
+                "action": "SELL", "symbol": symbol, "price": current_price,
+                "pnl": pnl_usd, "reason": reason, "time": datetime.now().isoformat(),
             })
 
             # Kayıp/kazanç serisi takibi
@@ -238,10 +274,10 @@ class OrderExecutor:
                 sym_losses[symbol] = sym_losses.get(symbol, 0) + 1
                 bot._symbol_consecutive_losses = sym_losses
                 logger.info(f"  Ardisik zarar: {bot._consecutive_losses} | {symbol}: {sym_losses[symbol]}")
-                # WashSale kaydı
-                if hasattr(bot, 'wash_sale_tracker'):
+                # WashSale kaydı — gerçek zarar tutarı
+                if hasattr(bot, 'wash_sale_tracker') and pnl_usd < 0:
                     bot.wash_sale_tracker.record_loss_sale(
-                        symbol, -1.0, datetime.now().isoformat()[:10]
+                        symbol, pnl_usd, datetime.now().isoformat()[:10]
                     )
             elif "TAKE_PROFIT" in reason or "TRAILING_STOP" in reason:
                 bot._consecutive_losses = 0
@@ -249,17 +285,26 @@ class OrderExecutor:
                 sym_losses[symbol] = 0
                 bot._symbol_consecutive_losses = sym_losses
 
-            # Performans takibi + Telegram bildirim
+            # Performans takibi
             if hasattr(bot, 'performance'):
                 from config import SECTOR_MAP
                 sector = SECTOR_MAP.get(symbol, "Unknown")
                 bot.performance.record_trade(
                     symbol=symbol, action="SELL", qty=float(qty),
-                    price=float(entry), pnl=pnl_usd, reason=reason,
+                    price=float(current_price), pnl=pnl_usd, reason=reason,
                     sector=sector,
                 )
+
+            # Ajan öz-değerlendirme feedback loop
+            if hasattr(bot, 'agent_perf'):
+                outcome = "WIN" if pnl_usd > 0 else "LOSS" if pnl_usd < 0 else "NEUTRAL"
+                try:
+                    bot.agent_perf.record_outcome(symbol, outcome, pnl_usd)
+                except Exception:
+                    pass
+
+            # Telegram bildirim
             if hasattr(bot, 'notifier'):
-                pnl_pct = (pnl_usd / max(float(entry) * float(qty), 0.01)) * 100 if entry else 0
                 bot.notifier.notify_sell(symbol, reason, pnl_usd, pnl_pct)
 
             bot.consecutive_errors = 0

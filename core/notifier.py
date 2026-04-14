@@ -148,3 +148,7 @@ class TelegramNotifier:
             f"Dikkat: Hakkın dolduğunda gün içi satış engellenecek!"
         )
         self._send(text)
+
+    def send_message(self, text: str) -> bool:
+        """Genel amaçlı mesaj gönder (short executor, özel bildirimler vb.)."""
+        return self._send(text)

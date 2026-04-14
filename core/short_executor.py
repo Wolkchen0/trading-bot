@@ -68,12 +68,30 @@ class ShortExecutor:
                     logger.warning(f"  {symbol} SHORT SQUEEZE RISKI! Volume/fiyat spike — short yapilmiyor")
                     return False
 
-            # Pozisyon boyutu
+            # === KELLY-ATR ADAPTİF SHORT POZİSYON BOYUTLANDIRMA ===
             price = analysis["price"]
-            max_invest = min(
-                equity * short_config.get("short_max_position_pct", 0.20),
-                short_config.get("short_max_position_usd", 150),
-            )
+
+            if hasattr(bot, 'position_sizer'):
+                sizing = bot.position_sizer.calculate_position_size(
+                    equity=equity,
+                    price=price,
+                    atr=analysis.get("atr", 0),
+                    config=short_config,
+                    side="SHORT",
+                    consecutive_losses=getattr(bot, '_consecutive_losses', 0),
+                    market_regime=getattr(bot, '_market_regime', 'NORMAL'),
+                    sector_weight=1.0,
+                )
+                max_invest = sizing["position_usd"]
+                if max_invest <= 0:
+                    logger.debug(f"  {symbol} SHORT PositionSizer: {sizing['reasoning']}")
+                    return False
+            else:
+                # Fallback: eski sabit hesaplama
+                max_invest = min(
+                    equity * short_config.get("short_max_position_pct", 0.20),
+                    short_config.get("short_max_position_usd", 150),
+                )
 
             if max_invest < config.get("min_trade_value", 10):
                 logger.debug(f"  SHORT yetersiz: ${max_invest:.2f}")
@@ -232,6 +250,16 @@ class ShortExecutor:
                 bot.notifier.send_message(
                     f"🔺 COVER {symbol} | {reason}"
                 )
+
+            # Ajan öz-değerlendirme feedback loop (SHORT)
+            if hasattr(bot, 'agent_perf'):
+                # Short'ta kar = fiyat düştü = SELL tahmini doğru
+                pnl_usd = (entry - float(analysis.get("price", entry))) * qty if entry > 0 else 0
+                outcome = "WIN" if pnl_usd > 0 else "LOSS" if pnl_usd < 0 else "NEUTRAL"
+                try:
+                    bot.agent_perf.record_outcome(symbol, outcome, pnl_usd)
+                except Exception:
+                    pass
 
             bot.consecutive_errors = 0
             return True

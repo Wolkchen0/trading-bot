@@ -66,6 +66,9 @@ from core.compliance import WashSaleTracker
 from core.notifier import TelegramNotifier
 from core.performance_tracker import PerformanceTracker
 from core.sector_rotation import SectorRotator
+from core.position_sizer import PositionSizer
+from core.volume_analyzer import VolumeAnalyzer
+from core.agent_performance import AgentPerformanceTracker
 
 # FinBERT opsiyonel
 try:
@@ -191,17 +194,16 @@ class StockBot:
         # Sektör rotasyonu (VIX bazlı)
         self.sector_rotator = SectorRotator()
 
-        # FinBERT (opsiyonel)
-        if FINBERT_AVAILABLE:
-            try:
-                self.finbert = FinBERTAnalyzer()
-            except Exception:
-                self.finbert = None
-        else:
-            self.finbert = None
+        # FinBERT — news_analyzer'ın instance'ını paylaş (çift yüklemeyi önle, ~800MB RAM tasarrufu)
+        self.finbert = getattr(self.news_analyzer, 'finbert', None)
 
         # Teknik analizci
         self.analyzer = TechnicalAnalyzer(self)
+
+        # İyileştirme modülleri (v2.0)
+        self.position_sizer = PositionSizer(performance_tracker=self.performance)
+        self.volume_analyzer = VolumeAnalyzer()
+        self.agent_perf = AgentPerformanceTracker()
 
         # === POZİSYON SENKRONİZASYONU (restart-safe) ===
         self._sync_positions_from_alpaca()
@@ -496,6 +498,18 @@ class StockBot:
             # Multi-agent karar
             decision = self._get_agent_decision(symbol, analysis, config)
 
+            # SHORT sinyal mapping:
+            # 1. analyzer.py zaten SHORT üretir (sell_score >= 45)
+            # 2. Coordinator SELL döndürür ama SELL != SHORT:
+            #    - Eğer elimizde long pozisyon varsa → gerçek SELL (kapat)
+            #    - Eğer pozisyonumuz yoksa → SHORT (yeni kısa pozisyon aç)
+            if decision["signal"] == "SELL" and symbol not in self.positions:
+                decision["signal"] = "SHORT"
+            # Teknik analizden gelen native SHORT sinyalini de coordinator'dan geçir
+            if analysis.get("signal") == "SHORT" and decision["signal"] == "HOLD":
+                decision["signal"] = "SHORT"
+                decision["confidence"] = max(decision.get("confidence", 0), analysis.get("confidence", 0))
+
             # Ters ETF & Endeks filtresi
             _inverse_etfs = MARKET_REGIME_CONFIG.get("inverse_etf_symbols", [])
             _index_symbols = MARKET_REGIME_CONFIG.get("index_symbols", [])
@@ -569,89 +583,37 @@ class StockBot:
             logger.debug(f"  {symbol} analiz hatası: {e}")
 
     def _get_technical_analysis(self, symbol: str, config: Dict) -> Optional[Dict]:
-        """Hisse için teknik analiz yap."""
+        """Hisse için gelişmiş teknik analiz + volume analizi.
+
+        İçerik: RSI, EMA, MACD, BB, ATR, Ichimoku, ADX, OBV, Fibonacci,
+        RSI Divergence, VWAP, S/R + Unusual Volume + Smart Money algılama.
+        SHORT sinyali de üretir (sell_score >= 45).
+        """
         try:
             df = self.get_stock_bars(symbol, days=30)
-            if df.empty or len(df) < 14:
+            if df.empty or len(df) < 30:
                 return None
 
-            close = df["close"]
-            price = float(close.iloc[-1])
+            # Teknik analiz
+            result = self.analyzer.analyze(df, config)
 
-            # RSI
-            rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
+            # Volume analizi (Smart Money algılama)
+            vol_data = self.volume_analyzer.analyze_volume(df)
+            result["volume_analysis"] = vol_data
 
-            # EMA'lar
-            ema9 = EMAIndicator(close, window=9).ema_indicator().iloc[-1]
-            ema21 = EMAIndicator(close, window=21).ema_indicator().iloc[-1]
-            ema50 = EMAIndicator(close, window=min(50, len(close)-1)).ema_indicator().iloc[-1] if len(close) >= 50 else price
+            # Volume sinyali confidence'a katkı sağlar
+            if vol_data.get("confidence_boost", 0) > 0:
+                boost = vol_data["confidence_boost"]
+                vol_signal = vol_data.get("signal", "NORMAL")
 
-            # EMA200 (varsa)
-            above_ema200 = True
-            if len(close) >= 200:
-                ema200 = EMAIndicator(close, window=200).ema_indicator().iloc[-1]
-                above_ema200 = price > ema200
+                if vol_signal == "ACCUMULATION" and result["signal"] in ("BUY", "HOLD"):
+                    result["confidence"] = min(result["confidence"] + boost, 100)
+                    result["reasons"].append(f"SmartMoney:+{boost}({vol_signal})")
+                elif vol_signal == "DISTRIBUTION" and result["signal"] in ("SHORT", "SELL", "HOLD"):
+                    result["confidence"] = min(result.get("sell_score", 0) + boost, 100)
+                    result["reasons"].append(f"SmartMoney:+{boost}({vol_signal})")
 
-            # MACD
-            macd_obj = MACD(close)
-            macd_line = macd_obj.macd().iloc[-1]
-            macd_signal = macd_obj.macd_signal().iloc[-1]
-            macd_cross = "BULLISH" if macd_line > macd_signal else "BEARISH"
-
-            # Bollinger Bands
-            bb = BollingerBands(close)
-            bb_lower = bb.bollinger_lband().iloc[-1]
-            bb_upper = bb.bollinger_hband().iloc[-1]
-
-            # ATR
-            atr = AverageTrueRange(df["high"], df["low"], close).average_true_range().iloc[-1]
-
-            # Skor hesapla
-            tech_score = 0
-            reasons = []
-
-            if rsi < config.get("rsi_oversold", 30):
-                tech_score += 25
-                reasons.append(f"RSI oversold ({rsi:.0f})")
-            elif rsi > config.get("rsi_overbought", 70):
-                tech_score -= 20
-                reasons.append(f"RSI overbought ({rsi:.0f})")
-
-            if ema9 > ema21:
-                tech_score += 15
-                reasons.append("EMA9>EMA21")
-            else:
-                tech_score -= 10
-
-            if macd_cross == "BULLISH":
-                tech_score += 15
-                reasons.append("MACD bullish")
-
-            if price <= bb_lower * 1.01:
-                tech_score += 10
-                reasons.append("BB bant dibi")
-
-            # Sinyal belirle
-            signal = "HOLD"
-            if tech_score >= 30:
-                signal = "BUY"
-            elif tech_score <= -20:
-                signal = "SELL"
-
-            return {
-                "signal": signal,
-                "price": price,
-                "rsi": rsi,
-                "ema9": ema9,
-                "ema21": ema21,
-                "macd_signal": macd_cross,
-                "atr": atr,
-                "above_ema200": above_ema200,
-                "tech_score": tech_score,
-                "confidence": min(abs(tech_score) * 1.5, 100),
-                "reasons": reasons,
-            }
-
+            return result
         except Exception as e:
             logger.debug(f"  {symbol} teknik analiz hatası: {e}")
             return None
@@ -692,11 +654,30 @@ class StockBot:
             # Risk data
             risk_data = self._build_risk_data(analysis, config)
 
+            # Dinamik ajan ağırlıkları (performans bazlı)
+            try:
+                dynamic_weights = self.agent_perf.get_dynamic_weights()
+                self.coordinator.WEIGHTS = dynamic_weights
+            except Exception:
+                pass  # Hata durumunda varsayılan ağırlıklar kullanılır
+
             # Coordinator kararı
             decision = self.coordinator.decide(
                 symbol, tech_data, fund_data,
                 sent_data, social_data, risk_data
             )
+
+            # Ajan tahminlerini kaydet (öz-değerlendirme için)
+            try:
+                if decision.get("signal") != "HOLD":
+                    self.agent_perf.record_prediction(
+                        symbol=symbol,
+                        agent_votes=decision.get("votes", []),
+                        coordinator_signal=decision["signal"],
+                    )
+            except Exception:
+                pass
+
             return decision
 
         except Exception as e:
@@ -950,7 +931,11 @@ class StockBot:
         try:
             data = {
                 "positions": self.positions,
-                "last_trade_time": {k: v.isoformat() for k, v in self.last_trade_time.items()},
+                "short_positions": self.short_positions,
+                "last_trade_time": {
+                    k: (v.isoformat() if hasattr(v, 'isoformat') else str(v))
+                    for k, v in self.last_trade_time.items()
+                },
                 "consecutive_losses": self._consecutive_losses,
                 "symbol_consecutive_losses": self._symbol_consecutive_losses,
                 "daily_buys_count": self._daily_buys_count,
@@ -980,9 +965,20 @@ class StockBot:
                             "partial_sold": meta.get("partial_sold", False),
                             "synced_from_alpaca": False,
                         })
+                # Short pozisyon metadata'sını yükle
+                for sym, meta in data.get("short_positions", {}).items():
+                    if sym in self.short_positions:
+                        self.short_positions[sym].update({
+                            "entry_time": meta.get("entry_time", self.short_positions[sym].get("entry_time")),
+                            "lowest_price": meta.get("lowest_price", self.short_positions[sym].get("lowest_price", 0)),
+                            "stop_loss_pct": meta.get("stop_loss_pct"),
+                            "breakeven_set": meta.get("breakeven_set", False),
+                            "partial_covered": meta.get("partial_covered", False),
+                            "synced_from_alpaca": False,
+                        })
                 self._consecutive_losses = data.get("consecutive_losses", 0)
                 self._symbol_consecutive_losses = data.get("symbol_consecutive_losses", {})
-                logger.info(f"  📁 Pozisyon metadata yüklendi ({len(self.positions)} pozisyon)")
+                logger.info(f"  📁 Metadata yüklendi ({len(self.positions)} long + {len(self.short_positions)} short)")
         except Exception as e:
             logger.debug(f"  Pozisyon metadata yüklenemedi: {e}")
 

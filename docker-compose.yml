@@ -9,6 +9,8 @@ services:
     image: trading-bot:latest
     container_name: trading-bot-live
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - TRADING_MODE=live
       - BOT_MODE=long_only
@@ -32,6 +34,8 @@ services:
         condition: service_started
     container_name: trading-bot-paper
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - TRADING_MODE=paper
       - BOT_MODE=both

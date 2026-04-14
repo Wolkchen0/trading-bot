@@ -1,5 +1,5 @@
 """
-Kripto Bot Watchdog — Botu 7/24 canlı tutar.
+Stock Bot Watchdog — Botu 7/24 canlı tutar.
 Bot çökerse otomatik yeniden başlatır.
 
 Kullanım:
@@ -17,7 +17,7 @@ import signal
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BOT_SCRIPT = os.path.join(SCRIPT_DIR, "crypto_bot.py")
+BOT_SCRIPT = os.path.join(SCRIPT_DIR, "stock_bot.py")
 STOP_FILE = os.path.join(SCRIPT_DIR, "STOP_BOT")
 LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 
@@ -108,7 +108,7 @@ def main():
 
     mode_str = "CANLI (GERCEK PARA!)" if live_mode else "PAPER (SANAL)"
     log("=" * 60)
-    log(f"  KRIPTO BOT WATCHDOG BASLATILDI")
+    log(f"  STOCK BOT WATCHDOG BASLATILDI")
     log(f"  Mod: {mode_str}")
     log(f"  Max yeniden baslatma: {MAX_RESTARTS}/gun")
     log(f"  Durdurmak icin: STOP_BOT dosyasi olustur veya Ctrl+C")

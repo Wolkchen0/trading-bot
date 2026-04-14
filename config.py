@@ -193,7 +193,8 @@ SECTOR_MAP = {
 }
 
 # ============================================================
-# RİSK YÖNETİMİ AYARLARI
+# ⚠️ LEGACY CONFIG — Sadece _legacy/ modüller tarafından kullanılıyor.
+# Ana bot STOCK_CONFIG kullanır. Bu ayarlar geriye uyumluluk için duruyor.
 # ============================================================
 RISK_CONFIG = {
     "max_risk_per_trade_pct": 0.02,     # Tek işlemde max %2 risk
