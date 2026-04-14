@@ -150,5 +150,88 @@ class TelegramNotifier:
         self._send(text)
 
     def send_message(self, text: str) -> bool:
-        """Genel amaçlı mesaj gönder (short executor, özel bildirimler vb.)."""
+        """Genel amacli mesaj gonder (short executor, ozel bildirimler vb.)."""
         return self._send(text)
+
+    def send_daily_report(self, bot):
+        """
+        Gunluk kapsamli performans raporu.
+
+        Icerik:
+        - P&L ozeti
+        - Acik pozisyonlar
+        - Ajan dogruluk oranlari
+        - Piyasa rejimi
+        - Kuyruk durumu
+        """
+        try:
+            equity = bot.equity
+            initial = bot.initial_equity
+            pnl = equity - initial
+            pnl_pct = (pnl / initial * 100) if initial > 0 else 0
+
+            # Acik pozisyonlar
+            pos_lines = []
+            for sym, p in bot.positions.items():
+                entry = p.get("entry_price", 0)
+                try:
+                    snap = bot.data_client.get_stock_snapshot(sym)
+                    curr = float(snap.latest_trade.price) if snap else entry
+                except Exception:
+                    curr = entry
+                chg = ((curr - entry) / entry * 100) if entry > 0 else 0
+                emoji = "+" if chg > 0 else ""
+                pos_lines.append(f"  {sym}: {emoji}{chg:.1f}%")
+
+            for sym, p in bot.short_positions.items():
+                entry = p.get("entry_price", 0)
+                try:
+                    snap = bot.data_client.get_stock_snapshot(sym)
+                    curr = float(snap.latest_trade.price) if snap else entry
+                except Exception:
+                    curr = entry
+                chg = ((entry - curr) / entry * 100) if entry > 0 else 0
+                emoji = "+" if chg > 0 else ""
+                pos_lines.append(f"  S:{sym}: {emoji}{chg:.1f}%")
+
+            pos_text = "\n".join(pos_lines) if pos_lines else "  (yok)"
+
+            # Ajan performansi
+            agent_text = ""
+            if hasattr(bot, 'agent_perf'):
+                stats = bot.agent_perf.get_agent_stats()
+                agent_lines = []
+                for name, data in stats.items():
+                    acc = data.get("accuracy", "N/A")
+                    if isinstance(acc, (int, float)):
+                        acc = f"{acc:.0f}%"
+                    agent_lines.append(f"  {name}: {acc}")
+                agent_text = "\n".join(agent_lines) if agent_lines else "  (veri yok)"
+
+            # Rejim
+            regime = getattr(bot, '_market_regime', 'N/A')
+            enhanced = getattr(bot, '_enhanced_regime', {})
+            regime_detail = enhanced.get("regime", "")
+            trading_mode = enhanced.get("trading_mode", "")
+
+            # Signal queue
+            queue_count = 0
+            if hasattr(bot, 'signal_queue'):
+                q = bot.signal_queue.get_queue_status()
+                queue_count = q.get("pending_count", 0)
+
+            text = (
+                f"<b>GUNLUK RAPOR</b>\n"
+                f"{'=' * 20}\n"
+                f"Bakiye: ${equity:,.2f}\n"
+                f"P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)\n"
+                f"\nPozisyonlar:\n{pos_text}\n"
+                f"\nAjan Accuracy:\n{agent_text}\n"
+                f"\nRejim: {regime} | {regime_detail} ({trading_mode})\n"
+                f"Kuyruk: {queue_count} sinyal\n"
+                f"\n{datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            self._send(text)
+
+        except Exception as e:
+            logger.debug(f"  Gunluk rapor hatasi: {e}")

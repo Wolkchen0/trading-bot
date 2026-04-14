@@ -69,6 +69,10 @@ from core.sector_rotation import SectorRotator
 from core.position_sizer import PositionSizer
 from core.volume_analyzer import VolumeAnalyzer
 from core.agent_performance import AgentPerformanceTracker
+from core.gap_scanner import GapScanner
+from core.relative_strength import RelativeStrength
+from core.market_regime import MarketRegimeDetector
+from core.signal_queue import SignalQueue
 
 # FinBERT opsiyonel
 try:
@@ -200,10 +204,20 @@ class StockBot:
         # Teknik analizci
         self.analyzer = TechnicalAnalyzer(self)
 
-        # İyileştirme modülleri (v2.0)
+        # Iyilestirme modullleri (v2.0)
         self.position_sizer = PositionSizer(performance_tracker=self.performance)
         self.volume_analyzer = VolumeAnalyzer()
         self.agent_perf = AgentPerformanceTracker()
+
+        # Iyilestirme modulleri (v3.0)
+        self.gap_scanner = GapScanner()
+        self.relative_strength = RelativeStrength()
+        self.regime_detector = MarketRegimeDetector()
+        self.signal_queue = SignalQueue()
+        self._spy_df_cache = None
+        self._spy_cache_time = datetime.min
+        self._gap_scan_done_today = False
+        self._gap_scan_date = date.min
 
         # === POZİSYON SENKRONİZASYONU (restart-safe) ===
         self._sync_positions_from_alpaca()
@@ -284,8 +298,21 @@ class StockBot:
                     if self.kill_switch.check_api_error(e):
                         continue
 
-                # Piyasa rejim tespiti (her 30 dk)
+                # Piyasa rejim tespiti (her 30 dk) — v3.0 gelismis rejim
                 self._update_market_regime()
+
+                # Pre-Market Gap Scanner (gunde 1 kez, piyasa acilmadan)
+                if not self._gap_scan_done_today or self._gap_scan_date != date.today():
+                    has_open = len(self.positions) > 0 or len(self.short_positions) > 0
+                    if has_open:
+                        try:
+                            gap_alerts = self.gap_scanner.scan_overnight_gaps(self)
+                            if gap_alerts:
+                                self.gap_scanner.execute_gap_actions(self, gap_alerts)
+                        except Exception as e:
+                            logger.debug(f"  Gap scan hatasi: {e}")
+                    self._gap_scan_done_today = True
+                    self._gap_scan_date = date.today()
 
                 # Pozisyon yonetimi (her dongude)
                 if BOT_MODE in ("long_only", "both"):
@@ -298,7 +325,19 @@ class StockBot:
                     except Exception as e:
                         logger.debug(f"  Short pozisyon yonetim hatasi: {e}")
 
-                # Güvenli bölge kontrolü
+                # Signal Queue kontrolu — bekleyen sinyalleri kontrol et
+                try:
+                    ready_signals = self.signal_queue.check_entries(self)
+                    for sig in ready_signals:
+                        sym = sig["symbol"]
+                        if sig["signal"] == "BUY" and BOT_MODE in ("long_only", "both"):
+                            self.executor.execute_buy(sym, sig["analysis"], config)
+                        elif sig["signal"] == "SHORT" and BOT_MODE in ("short_only", "both"):
+                            self.short_executor.execute_short(sym, sig["analysis"], config, SHORT_CONFIG)
+                except Exception as e:
+                    logger.debug(f"  Signal queue hatasi: {e}")
+
+                # Guvenli bolge kontrolu
                 if not market_status["is_safe_zone"]:
                     time.sleep(10)
                     continue
@@ -441,7 +480,7 @@ class StockBot:
     # ============================================================
 
     def _update_market_regime(self):
-        """SPY EMA200 bazli piyasa rejim tespiti. Her 30 dakikada bir guncellenir."""
+        """SPY bazli piyasa rejim tespiti — v3.0 gelismis (ADX+BB+EMA)."""
         if not MARKET_REGIME_CONFIG.get("enabled", True):
             return
 
@@ -458,9 +497,14 @@ class StockBot:
             if df.empty or len(df) < 50:
                 return
 
+            # SPY verisini cache'le (relative strength icin)
+            self._spy_df_cache = df
+            self._spy_cache_time = now
+
             close = df["close"]
             price = float(close.iloc[-1])
 
+            # Eski EMA200 rejimi (backward compat)
             ema_period = MARKET_REGIME_CONFIG.get("ema_period", 200)
             ema_period = min(ema_period, len(close) - 1)
             ema200 = EMAIndicator(close, window=ema_period).ema_indicator().iloc[-1]
@@ -472,16 +516,21 @@ class StockBot:
             else:
                 self._market_regime = "BULL"
 
-            if old_regime != self._market_regime:
-                emoji = "🐻" if self._market_regime == "BEAR" else "🐂"
-                logger.info(
-                    f"  {emoji} PIYASA REJIM DEGISIMI: {old_regime} → {self._market_regime} "
-                    f"| SPY=${price:.2f} vs EMA{ema_period}=${ema200:.2f}"
-                )
-            else:
-                logger.debug(
-                    f"  Rejim: {self._market_regime} | SPY=${price:.2f} vs EMA{ema_period}=${ema200:.2f}"
-                )
+            # v3.0 Gelismis 4-rejim algilama (ADX + BB + EMA)
+            try:
+                vix = getattr(self, '_last_vix', 0)
+                enhanced = self.regime_detector.detect_regime(df, vix=vix)
+                self._enhanced_regime = enhanced
+                self._regime_trading_mode = enhanced.get("trading_mode", "NORMAL")
+
+                if old_regime != self._market_regime or self.regime_detector.current_regime != enhanced["regime"]:
+                    logger.info(
+                        f"  REJIM: {self._market_regime} | "
+                        f"Detay: {enhanced['regime']} ({enhanced['trading_mode']}) "
+                        f"| {enhanced['description']}"
+                    )
+            except Exception as e:
+                logger.debug(f"  Gelismis rejim hatasi: {e}")
 
         except Exception as e:
             logger.debug(f"  Rejim tespiti hatasi: {e}")
@@ -606,7 +655,7 @@ class StockBot:
             vol_data = self.volume_analyzer.analyze_volume(df)
             result["volume_analysis"] = vol_data
 
-            # Volume sinyali confidence'a katkı sağlar
+            # Volume sinyali confidence'a katki saglar
             if vol_data.get("confidence_boost", 0) > 0:
                 boost = vol_data["confidence_boost"]
                 vol_signal = vol_data.get("signal", "NORMAL")
@@ -617,6 +666,24 @@ class StockBot:
                 elif vol_signal == "DISTRIBUTION" and result["signal"] in ("SHORT", "SELL", "HOLD"):
                     result["confidence"] = min(result.get("sell_score", 0) + boost, 100)
                     result["reasons"].append(f"SmartMoney:+{boost}({vol_signal})")
+
+            # Relative Strength (SPY'a gore guc siralamasi)
+            try:
+                spy_df = self._spy_df_cache
+                if spy_df is not None and not spy_df.empty:
+                    rs_data = self.relative_strength.calculate_rs(df, spy_df)
+                    result["relative_strength"] = rs_data
+
+                    # RS bazli confidence ayarlama
+                    side = "LONG" if result["signal"] in ("BUY",) else "SHORT"
+                    rs_boost = self.relative_strength.get_rs_signal_boost(rs_data, side)
+                    if rs_boost != 0:
+                        result["confidence"] = max(0, min(result["confidence"] + rs_boost, 100))
+                        result["reasons"].append(
+                            f"RS:{rs_data['rank_label']}({rs_data['composite_rs']:+.1%})"
+                        )
+            except Exception:
+                pass
 
             return result
         except Exception as e:
@@ -848,12 +915,24 @@ class StockBot:
             logger.error(f"  Heartbeat hatası: {e}")
 
     def _periodic_status_report(self, config: Dict):
-        """Periyodik durum raporu."""
+        """Periyodik durum raporu + gunluk kapanış raporu."""
         interval = config.get("status_report_interval", 5) * 60
         if (datetime.now() - self._last_status_time).total_seconds() < interval:
             return
         self._last_status_time = datetime.now()
         self._log_heartbeat()
+
+        # Gunluk Telegram raporu (gunde 1 kez, 15:50-16:00 arasi)
+        now = datetime.now()
+        if (now.hour == 15 and now.minute >= 50 and
+            getattr(self, '_daily_report_date', None) != date.today()):
+            try:
+                if hasattr(self, 'notifier'):
+                    self.notifier.send_daily_report(self)
+                    self._daily_report_date = date.today()
+                    logger.info("  Gunluk Telegram raporu gonderildi")
+            except Exception as e:
+                logger.debug(f"  Gunluk rapor hatasi: {e}")
 
     # ============================================================
     # POZİSYON SENKRONİZASYONU & PERSISTENCE

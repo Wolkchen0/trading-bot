@@ -100,22 +100,7 @@ class OrderExecutor:
 
             logger.info(f"  Pozisyon: ${max_invest:.2f} | {qty:.4f} adet @ ${price:,.2f} (tier: {tier_weight:.0%})")
 
-            # Emir gönder
-            request = MarketOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,  # Hisse: DAY (piyasa kapanışında iptal)
-            )
-            order = bot.client.submit_order(request)
-
-            logger.info(
-                f"  ✅ BUY {symbol}: {qty:.4f} @ ${price:,.2f} "
-                f"(${qty * price:,.2f}) | Komisyon: $0 "
-                f"| {', '.join(analysis.get('reasons', []))}"
-            )
-
-            # ADAPTIF STOP-LOSS
+            # ADAPTIF STOP-LOSS hesapla
             atr_value = analysis.get("atr", 0)
             if atr_value > 0 and price > 0:
                 atr_pct = atr_value / price
@@ -125,25 +110,65 @@ class OrderExecutor:
             else:
                 adaptive_sl = config['stop_loss_pct']
 
-            # Sunucu taraflı stop-loss
             stop_price = round(price * (1 - adaptive_sl), 2)
+            tp_price = round(price * (1 + config.get('take_profit_pct', 0.08)), 2)
+
+            # BRACKET ORDER — BUY + TP + SL tek atomik emirle
+            # Boylece SL basarisiz olursa korumasiz pozisyon kalmaz
+            bracket_success = False
             try:
-                limit_price = round(stop_price * 0.995, 2)
-                sl_request = StopLimitOrderRequest(
+                request = MarketOrderRequest(
                     symbol=symbol,
                     qty=qty,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.GTC,
-                    stop_price=stop_price,
-                    limit_price=limit_price,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY,
+                    order_class="bracket",
+                    take_profit={"limit_price": tp_price},
+                    stop_loss={
+                        "stop_price": stop_price,
+                        "limit_price": round(stop_price * 0.995, 2),
+                    },
                 )
-                bot.client.submit_order(sl_request)
+                order = bot.client.submit_order(request)
+                bracket_success = True
                 logger.info(
-                    f"  STOP-LOSS: {symbol} @ ${stop_price:,.2f} "
-                    f"({adaptive_sl:.1%} | ATR={atr_value:.4f})"
+                    f"  BUY {symbol}: {qty:.4f} @ ${price:,.2f} "
+                    f"(${qty * price:,.2f}) | BRACKET TP=${tp_price} SL=${stop_price} "
+                    f"| {', '.join(analysis.get('reasons', []))}"
                 )
-            except Exception as sl_err:
-                logger.warning(f"  Stop-loss emri gönderilemedi: {sl_err}")
+            except Exception as bracket_err:
+                logger.debug(f"  Bracket order desteklenmiyor, fallback: {bracket_err}")
+
+            # FALLBACK: Bracket basarisizsa eski 2-adimli yontem
+            if not bracket_success:
+                request = MarketOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY,
+                )
+                order = bot.client.submit_order(request)
+                logger.info(
+                    f"  BUY {symbol}: {qty:.4f} @ ${price:,.2f} "
+                    f"(${qty * price:,.2f}) | Komisyon: $0 "
+                    f"| {', '.join(analysis.get('reasons', []))}"
+                )
+                # Ayri SL emri
+                try:
+                    limit_price = round(stop_price * 0.995, 2)
+                    sl_request = StopLimitOrderRequest(
+                        symbol=symbol, qty=qty,
+                        side=OrderSide.SELL, time_in_force=TimeInForce.GTC,
+                        stop_price=stop_price, limit_price=limit_price,
+                    )
+                    bot.client.submit_order(sl_request)
+                except Exception as sl_err:
+                    logger.warning(f"  Stop-loss emri gonderilemedi: {sl_err}")
+
+            logger.info(
+                f"  STOP-LOSS: {symbol} @ ${stop_price:,.2f} "
+                f"({adaptive_sl:.1%} | ATR={atr_value:.4f})"
+            )
 
             # Pozisyon kaydet
             bot.positions[symbol] = {
