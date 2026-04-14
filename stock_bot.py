@@ -354,7 +354,12 @@ class StockBot:
                 # Durum raporu
                 self._periodic_status_report(config)
 
-                time.sleep(config.get("scan_interval_seconds", 30))
+                # Adaptif tarama araligi:
+                # Acik pozisyon varken 15 saniye (hizli tepki)
+                # Pozisyon yokken 30 saniye (API tasarrufu)
+                has_positions = len(self.positions) > 0 or len(self.short_positions) > 0
+                interval = 15 if has_positions else config.get("scan_interval_seconds", 30)
+                time.sleep(interval)
 
             except KeyboardInterrupt:
                 logger.info("Bot durduruldu (Ctrl+C)")

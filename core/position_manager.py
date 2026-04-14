@@ -1,14 +1,18 @@
 """
 Position Manager — Pozisyon Yönetimi
 
-StockBot'tan ayrıştırılmış pozisyon modülü.
+StockBot’tan ayrıştırılmış pozisyon modülü.
 - manage_positions(): Trailing stop, break-even, kademeli kâr alma, stop-loss
+- Sunucu taraflı SL güncellemesi: Break-even ve trailing stop değiştiğinde
+  Alpaca’daki stop emri de güncellenir (bot çökse bile korunma devam eder)
 """
 from datetime import datetime
 from typing import Dict
 
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import (
+    MarketOrderRequest, StopLimitOrderRequest, GetOrdersRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 
 from utils.logger import logger
 
@@ -77,9 +81,13 @@ class PositionManager:
                     bot.positions[symbol]["stop_loss_pct"] = be_offset
                     bot.positions[symbol]["breakeven_set"] = True
                     logger.info(
-                        f"  🔒 BREAK-EVEN {symbol}: +{pnl_pct:.1%} → SL giriş fiyatına çekildi (${breakeven_price:.2f})"
+                        f"  BREAK-EVEN {symbol}: +{pnl_pct:.1%} -> SL giris fiyatina cekildi (${breakeven_price:.2f})"
                     )
                     pos_sl_pct_override = be_offset
+                    # Sunucu tarafli SL'yi guncelle (bot cokse bile korunsun)
+                    self._update_server_stop_loss(
+                        symbol, breakeven_price, float(pos.qty), side="LONG"
+                    )
 
             # === SATIŞ KARARLARI (ÖNCELİK SIRASINA GÖRE) ===
 
@@ -101,10 +109,22 @@ class PositionManager:
             # 3. TRAILING STOP
             elif pnl_pct > 0.01 and trailing_drop >= config["trailing_stop_pct"]:
                 logger.info(
-                    f"  📉 TRAILING STOP {symbol}: Peak ${highest:,.2f} -> ${current_price:,.2f} "
+                    f"  TRAILING STOP {symbol}: Peak ${highest:,.2f} -> ${current_price:,.2f} "
                     f"(-{trailing_drop:.1%}) | P&L: {pnl_pct:.1%}"
                 )
                 bot.executor.execute_sell(symbol, f"TRAILING_STOP (peak -{trailing_drop:.1%})")
+
+            # 3b. TRAILING SL sunucu guncelleme (her dongude en yuksek fiyata gore)
+            elif pnl_pct > 0.02 and pos_data.get("breakeven_set", False):
+                # Kar %2+ ve break-even aktifse, trailing SL'yi sunucuda da yukari cek
+                trailing_sl_price = round(highest * (1 - config["trailing_stop_pct"]), 2)
+                last_server_sl = pos_data.get("last_server_sl", 0)
+                # Sadece fiyat yukseldiginde guncelle (gereksiz API cagrisi onle)
+                if trailing_sl_price > last_server_sl + 0.10:
+                    self._update_server_stop_loss(
+                        symbol, trailing_sl_price, float(pos.qty), side="LONG"
+                    )
+                    bot.positions[symbol]["last_server_sl"] = trailing_sl_price
 
             # 4. KADEMELİ KÂR ALMA (hisse senedi: tam hisse satılmalı)
             elif (pnl_pct >= config["partial_profit_pct"]
@@ -193,8 +213,13 @@ class PositionManager:
                 if pnl_pct >= be_trigger and not pos_data.get("breakeven_set", False):
                     bot.short_positions[symbol]["stop_loss_pct"] = be_offset
                     bot.short_positions[symbol]["breakeven_set"] = True
+                    # Short break-even: fiyat giris fiyatinin biraz USTUNE SL koy
+                    be_price = round(entry_price * (1 + be_offset), 2)
                     logger.info(
-                        f"  🔒 SHORT BREAK-EVEN {symbol}: +{pnl_pct:.1%} → SL girisa cekildi"
+                        f"  SHORT BREAK-EVEN {symbol}: +{pnl_pct:.1%} -> SL girisa cekildi (${be_price:.2f})"
+                    )
+                    self._update_server_stop_loss(
+                        symbol, be_price, abs_qty, side="SHORT"
                     )
 
             # === SATIS KARARLARI ===
@@ -247,6 +272,66 @@ class PositionManager:
             # Durum logla
             if abs(pnl_pct) > 0.02:
                 logger.info(
-                    f"  📋 SHORT {symbol}: {pnl_pct:+.2%} (${pnl_usd:+.2f}) | "
+                    f"  SHORT {symbol}: {pnl_pct:+.2%} (${pnl_usd:+.2f}) | "
                     f"Low: ${lowest:,.2f} | Rise: +{trailing_rise:.2%}"
                 )
+
+    # ================================================================
+    # SUNUCU TARAFLI STOP-LOSS GUNCELLEME
+    # ================================================================
+
+    def _update_server_stop_loss(self, symbol: str, new_stop_price: float,
+                                  qty: float, side: str = "LONG"):
+        """
+        Alpaca'daki mevcut stop emrini iptal edip yeni fiyattan yenisini koyar.
+
+        Bu metot sayesinde:
+        - Break-even'a gectiginde sunucu SL de giris fiyatina cekilir
+        - Trailing stop yukseldikce sunucu SL de yukarı cekilir
+        - Bot cokse/restart olsa bile Alpaca stop emri aktif kalir
+
+        Args:
+            symbol: Hisse sembolu
+            new_stop_price: Yeni stop fiyati
+            qty: Hisse adedi
+            side: "LONG" (SELL stop) veya "SHORT" (BUY stop)
+        """
+        bot = self.bot
+        try:
+            # 1. Mevcut stop emirlerini bul ve iptal et
+            orders = bot.client.get_orders(
+                GetOrdersRequest(status=QueryOrderStatus.OPEN)
+            )
+
+            cancel_side = OrderSide.SELL if side == "LONG" else OrderSide.BUY
+
+            for order in orders:
+                if (order.symbol == symbol
+                    and order.side == cancel_side
+                    and order.type in ("stop", "stop_limit")):
+                    bot.client.cancel_order_by_id(order.id)
+                    logger.debug(f"  Eski stop emri iptal: {symbol} #{order.id}")
+
+            # 2. Yeni stop emri koy
+            if side == "LONG":
+                limit_price = round(new_stop_price * 0.995, 2)  # %0.5 slippage payi
+            else:
+                limit_price = round(new_stop_price * 1.005, 2)  # SHORT: limit > stop
+
+            sl_request = StopLimitOrderRequest(
+                symbol=symbol,
+                qty=round(qty, 4),
+                side=cancel_side,
+                time_in_force=TimeInForce.GTC,
+                stop_price=round(new_stop_price, 2),
+                limit_price=limit_price,
+            )
+            bot.client.submit_order(sl_request)
+
+            logger.info(
+                f"  SL GUNCELLENDI {symbol}: ${new_stop_price:.2f} ({side}) "
+                f"| Limit: ${limit_price:.2f}"
+            )
+
+        except Exception as e:
+            logger.warning(f"  Sunucu SL guncelleme hatasi {symbol}: {e}")
