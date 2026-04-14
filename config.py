@@ -107,41 +107,45 @@ STOCK_SEARCH_TERMS = {
     "QQQ": ["qqq", "nasdaq 100", "tech index"],
 }
 
-# Jeopolitik anahtar kelimeler (tüm modüller kullanır)
-# Her kelime = (keyword, severity_weight) — ağırlıklı etki
+# Jeopolitik anahtar kelimeler — AKILLI AJAN SİSTEMİ
+# Keyword'ler haberi BULUR, FinBERT haberi ANLAR.
+# Severity seviyeleri:
+#   CRITICAL (3 puan) = Doğrudan piyasa etkisi, FinBERT onayı gerekmez
+#   HIGH (2 puan)     = Önemli olay, FinBERT negatif onaylarsa sayılır
+#   ELEVATED (1 puan) = Bağlama bağlı, SADECE FinBERT negatif derse sayılır
 GEOPOLITICAL_KEYWORDS = {
-    "bearish": [
-        # === SAVAŞ / ÇATIŞMA ===
+    "bearish_critical": [
+        # Doğrudan piyasa çökertenler — FinBERT onayı GEREKMEZ
+        "nuclear weapon", "nuclear strike", "tactical nuke", "nuclear threat",
+        "ceasefire violat", "ceasefire collapse", "broke ceasefire",
+        "invasion", "ground offensive", "war declared",
+        "strait of hormuz closed", "oil embargo", "pipeline attack",
+        "bank run", "systemic risk", "sovereign default",
+    ],
+    "bearish_high": [
+        # Önemli olaylar — FinBERT negatif onaylarsa 2 puan
         "war escalat", "military strike", "missile", "airstrike",
-        "bombing", "invasion", "retaliati", "ground offensive",
-        "drone attack", "drone strike", "artillery", "shelling",
-        "ceasefire violat", "ceasefire collapse", "truce broken",
-        "ceasefire ended", "resumed attack", "resumed fighting",
-        "resumed hostil", "broke ceasefire", "conflict resum",
-        # === ORTA DOĞU ===
-        "iran attack", "iran strike", "iran retali", "houthi",
-        "strait of hormuz", "red sea attack", "hezbollah",
-        "gaza escalat", "west bank", "lebanon strike",
-        "gulf tension", "iran israel", "iran nuclear",
-        # === ÇİN / ASYA ===
+        "bombing", "retaliati", "drone attack", "drone strike",
+        "artillery", "shelling", "resumed attack", "resumed fighting",
+        "iran attack", "iran strike", "houthi", "red sea attack",
+        "hezbollah", "gaza escalat", "lebanon strike",
         "china taiwan", "taiwan strait", "south china sea",
-        "north korea", "korean peninsula", "china sanction",
-        # === UKRAYNA / RUSYA ===
         "ukraine escalat", "russia attack", "nato escalat",
-        "nuclear threat", "nuclear weapon", "tactical nuke",
-        # === ENERJİ ===
-        "oil surge", "oil spike", "oil supply cut", "opec cut",
-        "pipeline attack", "energy crisis", "gas shortage",
-        "supply disruption", "blockade", "embargo",
-        # === EKONOMİK SAVAŞ ===
+        "oil surge", "oil spike", "oil supply cut",
+        "energy crisis", "gas shortage", "supply disruption",
+        "debt default", "bank failure", "credit crisis",
+        "liquidity crisis", "terror attack", "mass casualt",
+    ],
+    "bearish_elevated": [
+        # Bağlama bağlı — SADECE FinBERT negatif derse 1 puan
+        # "tariff lifted" = pozitif, "tariff war" = negatif — FinBERT ayırt eder
         "sanctions", "tariff", "trade war", "export ban",
         "chip ban", "tech ban", "economic warfare",
-        # === FİNANSAL KRİZ ===
-        "recession", "debt default", "bank failure", "credit crisis",
-        "sovereign default", "debt ceiling", "systemic risk",
-        "contagion", "bank run", "liquidity crisis",
-        # === TERORİZM ===
-        "terror attack", "terrorist", "mass casualt", "hostage",
+        "recession", "blockade", "embargo",
+        "north korea", "korean peninsula", "china sanction",
+        "iran israel", "iran nuclear", "gulf tension",
+        "west bank", "opec cut", "debt ceiling",
+        "contagion", "hostage", "terrorist",
     ],
     "bullish": [
         "ceasefire", "ceasefire agreed", "ceasefire hold",
@@ -152,8 +156,17 @@ GEOPOLITICAL_KEYWORDS = {
         "rate cut", "stimulus", "infrastructure bill",
         "oil drop", "oil price fall", "opec increase",
         "ceasefire extended", "hostage release", "prisoner swap",
+        "tariff removed", "tariff reduced", "tariff exemption",
+        "tariff relief", "trade progress", "tariff pause",
     ],
 }
+
+# Eski uyumluluk: tüm bearish keyword'leri tek listede
+GEOPOLITICAL_KEYWORDS["bearish"] = (
+    GEOPOLITICAL_KEYWORDS["bearish_critical"] +
+    GEOPOLITICAL_KEYWORDS["bearish_high"] +
+    GEOPOLITICAL_KEYWORDS["bearish_elevated"]
+)
 
 # ============================================================
 # SEKTÖR HARİTASI (korelasyon koruması için)

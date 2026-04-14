@@ -374,44 +374,141 @@ class StockNewsAnalyzer:
 
     def _check_geopolitical_risk(self, articles: List[Dict]) -> str:
         """
-        Haberlerde jeopolitik risk var mı? Severity skoruyla birlikte.
+        AKILLI JEOPOLİTİK AJAN — Keyword BULUR, FinBERT ANLAR.
+        
+        3 Katmanlı Akıllı Sistem:
+        1. CRITICAL keywords → Otomatik tehlike (savaş, nükleer)
+        2. HIGH keywords → FinBERT'e sor, negatifse say
+        3. ELEVATED keywords → SADECE FinBERT negatif derse say
+        
+        Ek: Bullish keywords pozitif skor verir (barış, anlaşma)
         """
         all_text = " ".join(
             f"{a.get('title', '')} {a.get('summary', '')}" for a in articles
         ).lower()
 
-        risk_count = 0
-        risk_keywords_found = []
-        for keyword in GEOPOLITICAL_KEYWORDS["bearish"]:
-            if keyword in all_text:
-                risk_count += 1
-                risk_keywords_found.append(keyword)
+        # === ADIM 1: Keyword'lerle haber eşleştirme ===
+        critical_found = []
+        high_found = []
+        elevated_found = []
+        bullish_found = []
 
-        safe_count = 0
-        for keyword in GEOPOLITICAL_KEYWORDS["bullish"]:
+        for keyword in GEOPOLITICAL_KEYWORDS.get("bearish_critical", []):
             if keyword in all_text:
-                safe_count += 1
+                critical_found.append(keyword)
 
-        # Sonuç
-        if risk_count >= 5:
+        for keyword in GEOPOLITICAL_KEYWORDS.get("bearish_high", []):
+            if keyword in all_text:
+                high_found.append(keyword)
+
+        for keyword in GEOPOLITICAL_KEYWORDS.get("bearish_elevated", []):
+            if keyword in all_text:
+                elevated_found.append(keyword)
+
+        for keyword in GEOPOLITICAL_KEYWORDS.get("bullish", []):
+            if keyword in all_text:
+                bullish_found.append(keyword)
+
+        # Hiç keyword yoksa → NORMAL
+        if not critical_found and not high_found and not elevated_found:
+            self._last_geo_risk = "NORMAL"
+            self._geo_risk_score = max(0, -len(bullish_found) * 5)
+            return "NORMAL"
+
+        # === ADIM 2: FinBERT ile haberlerin gerçek anlamını anla ===
+        risk_score = 0
+        confirmed_risks = []
+        dismissed_risks = []
+
+        # CRITICAL → sorgulanmaz, doğrudan tehlike
+        for kw in critical_found:
+            risk_score += 3
+            confirmed_risks.append(f"🔴 CRITICAL: {kw}")
+
+        # HIGH → FinBERT'e sor
+        for kw in high_found:
+            matching_articles = [
+                a for a in articles
+                if kw in f"{a.get('title', '')} {a.get('summary', '')}".lower()
+            ]
+            if matching_articles and self.finbert:
+                # En alakalı haberin sentiment'ini ölç
+                text = f"{matching_articles[0].get('title', '')} {matching_articles[0].get('summary', '')}"
+                try:
+                    result = self.finbert.analyze(text[:512])
+                    if result["label"] == "negative":
+                        risk_score += 2
+                        confirmed_risks.append(f"🟠 HIGH (FinBERT:{result['label']}): {kw}")
+                    else:
+                        dismissed_risks.append(f"✅ HIGH dismissed ({result['label']}): {kw}")
+                except Exception:
+                    risk_score += 1  # FinBERT hata verirse yarım puan
+                    confirmed_risks.append(f"🟡 HIGH (FinBERT N/A): {kw}")
+            else:
+                # FinBERT yoksa keyword'ü doğrudan say ama düşük puanla
+                risk_score += 1
+                confirmed_risks.append(f"🟡 HIGH (no FinBERT): {kw}")
+
+        # ELEVATED → SADECE FinBERT negatif derse say
+        for kw in elevated_found:
+            matching_articles = [
+                a for a in articles
+                if kw in f"{a.get('title', '')} {a.get('summary', '')}".lower()
+            ]
+            if matching_articles and self.finbert:
+                text = f"{matching_articles[0].get('title', '')} {matching_articles[0].get('summary', '')}"
+                try:
+                    result = self.finbert.analyze(text[:512])
+                    if result["label"] == "negative" and result["score"] > 0.6:
+                        risk_score += 1
+                        confirmed_risks.append(
+                            f"🟡 ELEVATED (FinBERT:{result['label']} {result['score']:.0%}): {kw}"
+                        )
+                    else:
+                        dismissed_risks.append(
+                            f"✅ ELEVATED dismissed ({result['label']} {result['score']:.0%}): {kw}"
+                        )
+                except Exception:
+                    dismissed_risks.append(f"✅ ELEVATED dismissed (FinBERT err): {kw}")
+            else:
+                # FinBERT yoksa ELEVATED keyword'leri SAYMA
+                dismissed_risks.append(f"✅ ELEVATED ignored (no FinBERT): {kw}")
+
+        # Bullish keyword'ler skoru düşürür
+        bullish_reduction = len(bullish_found) * 1
+        risk_score = max(0, risk_score - bullish_reduction)
+
+        # === ADIM 3: Risk seviyesini belirle ===
+        if risk_score >= 8 or len(critical_found) >= 2:
             level = "CRITICAL"
-            self._geo_risk_score = min(risk_count * 15, 100)
-        elif risk_count >= 3:
+            self._geo_risk_score = min(risk_score * 12, 100)
+        elif risk_score >= 5:
             level = "HIGH"
-            self._geo_risk_score = risk_count * 12
-        elif risk_count >= 1:
+            self._geo_risk_score = risk_score * 10
+        elif risk_score >= 2:
             level = "ELEVATED"
-            self._geo_risk_score = risk_count * 8
-        elif safe_count >= 2:
+            self._geo_risk_score = risk_score * 8
+        elif bullish_found:
             level = "LOW"
-            self._geo_risk_score = -safe_count * 5
+            self._geo_risk_score = -len(bullish_found) * 5
         else:
             level = "NORMAL"
             self._geo_risk_score = 0
 
         self._last_geo_risk = level
 
-        # Breaking news dedektörü: ateşkes ihlali / yeni saldırı
+        # === ADIM 4: Akıllı loglama ===
+        if confirmed_risks or dismissed_risks:
+            logger.info(
+                f"  🧠 JEOPOLİTİK AJAN: {level} (skor:{self._geo_risk_score}) | "
+                f"Onaylanan: {len(confirmed_risks)} | Reddedilen: {len(dismissed_risks)}"
+            )
+            for risk in confirmed_risks[:3]:
+                logger.info(f"    {risk}")
+            for dismiss in dismissed_risks[:3]:
+                logger.info(f"    {dismiss}")
+
+        # Breaking news dedektörü
         breaking_terms = [
             "ceasefire violat", "ceasefire collapse", "broke ceasefire",
             "resumed attack", "resumed fighting", "broke truce",
@@ -427,12 +524,6 @@ class StockNewsAnalyzer:
                     f"Risk: {self._geo_risk_score}"
                 )
                 break
-
-        if risk_keywords_found and risk_count >= 2:
-            logger.info(
-                f"  ⚠️ Jeopolitik: {level} (skor:{self._geo_risk_score}) "
-                f"| Kelimeler: {', '.join(risk_keywords_found[:5])}"
-            )
 
         return level
 
