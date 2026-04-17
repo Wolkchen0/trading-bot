@@ -194,6 +194,19 @@ class TelegramNotifier:
                 emoji = "+" if chg > 0 else ""
                 pos_lines.append(f"  S:{sym}: {emoji}{chg:.1f}%")
 
+            # Options pozisyonları
+            if hasattr(bot, 'options_positions'):
+                for sym, p in bot.options_positions.items():
+                    opt_type = p.get("type", "?")
+                    underlying = p.get("underlying", "?")
+                    strike = p.get("strike", 0)
+                    entry = p.get("entry_price", 0)
+                    qty = p.get("qty", 0)
+                    opt_emoji = "📞" if opt_type == "CALL" else "📉"
+                    pos_lines.append(
+                        f"  {opt_emoji}{underlying} {opt_type} ${strike} x{qty}"
+                    )
+
             pos_text = "\n".join(pos_lines) if pos_lines else "  (yok)"
 
             # Ajan performansi
@@ -220,12 +233,20 @@ class TelegramNotifier:
                 q = bot.signal_queue.get_queue_status()
                 queue_count = q.get("pending_count", 0)
 
+            # Options özet
+            opt_count = len(getattr(bot, 'options_positions', {}))
+            opt_exposure = sum(
+                p.get("cost_basis", 0)
+                for p in getattr(bot, 'options_positions', {}).values()
+            )
+
             text = (
                 f"<b>GUNLUK RAPOR</b>\n"
                 f"{'=' * 20}\n"
                 f"Bakiye: ${equity:,.2f}\n"
                 f"P&L: ${pnl:+.2f} ({pnl_pct:+.1f}%)\n"
                 f"\nPozisyonlar:\n{pos_text}\n"
+                f"\nOptions: {opt_count} adet | ${opt_exposure:,.0f}\n"
                 f"\nAjan Accuracy:\n{agent_text}\n"
                 f"\nRejim: {regime} | {regime_detail} ({trading_mode})\n"
                 f"Kuyruk: {queue_count} sinyal\n"

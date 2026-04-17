@@ -44,6 +44,7 @@ from config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE, BOT_MODE,
     get_base_url, STOCK_CONFIG, SHORT_CONFIG, STOCK_IDS, STOCK_SEARCH_TERMS,
     SECTOR_MAP, MARKET_REGIME_CONFIG,
+    OPTIONS_CONFIG, PAPER_AGGRESSIVE_CONFIG,
 )
 
 # Core modüller
@@ -73,6 +74,10 @@ from core.gap_scanner import GapScanner
 from core.relative_strength import RelativeStrength
 from core.market_regime import MarketRegimeDetector
 from core.signal_queue import SignalQueue
+from core.options_engine import OptionsEngine
+from core.options_analyzer import OptionsAnalyzer
+from core.options_executor import OptionsExecutor
+from core.options_manager import OptionsPositionManager
 
 # FinBERT opsiyonel
 try:
@@ -219,12 +224,35 @@ class StockBot:
         self._gap_scan_done_today = False
         self._gap_scan_date = date.min
 
+        # Options modülleri (v4.0 — CALL/PUT)
+        self.options_positions = {}  # Açık opsiyon pozisyonları
+        self.options_analyzer = OptionsAnalyzer(
+            trading_client=self.client,
+            api_key=ALPACA_API_KEY,
+            secret_key=ALPACA_SECRET_KEY,
+        )
+        self.options_engine = OptionsEngine(self)
+        self.options_executor = OptionsExecutor(self)
+        self.options_manager = OptionsPositionManager(self)
+        self._options_enabled = (
+            OPTIONS_CONFIG.get("options_enabled", False)
+            and (is_paper or not OPTIONS_CONFIG.get("options_paper_only", True))
+        )
+
+        # === PAPER AGRESİF MOD ===
+        if is_paper:
+            for key, value in PAPER_AGGRESSIVE_CONFIG.items():
+                if key in config:
+                    config[key] = value
+            logger.info("  📈 PAPER AGGRESSIVE MODE: Aktif")
+
         # === POZİSYON SENKRONİZASYONU (restart-safe) ===
         self._sync_positions_from_alpaca()
         self._load_position_metadata()
 
         mode_str = "PAPER" if is_paper else "🔴 LIVE"
         bot_mode_str = {"long_only": "📈 LONG ONLY", "short_only": "📉 SHORT ONLY", "both": "📊 LONG + SHORT"}.get(BOT_MODE, BOT_MODE)
+        options_str = "✅ CALL/PUT" if self._options_enabled else "❌"
         logger.info("=" * 60)
         logger.info(f"  STOCK TRADING BOT BASLATILDI")
         logger.info(f"  Mod: {mode_str} | Bot: {bot_mode_str}")
@@ -232,6 +260,7 @@ class StockBot:
         logger.info(f"  Max pozisyon: ${self.max_pos_usd} | Floor: ${self.equity_floor:,.2f}")
         logger.info(f"  Hisse havuzu: {len(config['symbols'])} hisse")
         logger.info(f"  Acik pozisyon: {len(self.positions)} long | {len(self.short_positions)} short")
+        logger.info(f"  Options: {options_str} | Opsiyon poz: {len(self.options_positions)}")
         logger.info(f"  PDT: {'EXEMPT' if equity >= 25000 else f'ACTIVE (max 2 DT/hafta)'}")
         logger.info(f"  KillSwitch: AKTIF | WashSale: AKTIF")
         logger.info("=" * 60)
@@ -325,6 +354,13 @@ class StockBot:
                     except Exception as e:
                         logger.debug(f"  Short pozisyon yonetim hatasi: {e}")
 
+                # Options pozisyon yonetimi (her dongude)
+                if self._options_enabled:
+                    try:
+                        self.options_manager.manage_positions(OPTIONS_CONFIG)
+                    except Exception as e:
+                        logger.debug(f"  Options pozisyon yonetim hatasi: {e}")
+
                 # Signal Queue kontrolu — bekleyen sinyalleri kontrol et
                 try:
                     ready_signals = self.signal_queue.check_entries(self)
@@ -396,7 +432,11 @@ class StockBot:
                 # Adaptif tarama araligi:
                 # Acik pozisyon varken 15 saniye (hizli tepki)
                 # Pozisyon yokken 30 saniye (API tasarrufu)
-                has_positions = len(self.positions) > 0 or len(self.short_positions) > 0
+                has_positions = (
+                    len(self.positions) > 0
+                    or len(self.short_positions) > 0
+                    or len(self.options_positions) > 0
+                )
                 interval = 15 if has_positions else config.get("scan_interval_seconds", 30)
                 time.sleep(interval)
 
@@ -591,6 +631,31 @@ class StockBot:
                 if decision["signal"] == "SHORT":
                     return
 
+            # === OPTIONS DEĞERLENDİRMESİ (v4.0) ===
+            # Güçlü sinyalde hisse yerine opsiyon tercih et
+            if self._options_enabled:
+                try:
+                    if self.options_engine.should_prefer_options(
+                        symbol, decision.get("confidence", 0), OPTIONS_CONFIG
+                    ):
+                        option_trade = self.options_engine.evaluate_option_trade(
+                            symbol, analysis, decision, OPTIONS_CONFIG
+                        )
+                        if option_trade:
+                            analysis["confidence"] = decision["confidence"]
+                            analysis["reasons"] = [decision.get("reasoning", "")]
+                            if option_trade["type"] == "CALL":
+                                self.options_executor.execute_call(
+                                    option_trade, analysis, OPTIONS_CONFIG
+                                )
+                            elif option_trade["type"] == "PUT":
+                                self.options_executor.execute_put(
+                                    option_trade, analysis, OPTIONS_CONFIG
+                                )
+                            return  # Opsiyon aldıysa hisse alma
+                except Exception as e:
+                    logger.debug(f"  {symbol} Options değerlendirme hatası: {e}")
+
             # === LONG (BUY) — BOT_MODE: 'long_only' veya 'both' ===
             if (decision["signal"] == "BUY"
                     and BOT_MODE in ("long_only", "both")
@@ -609,8 +674,34 @@ class StockBot:
                     if _is_inverse_etf:
                         analysis["reasons"].append("🐻 BEAR_MODE_INVERSE_ETF")
                     self.executor.execute_buy(symbol, analysis, config)
+
+                    # Opsiyon da ekle (güçlü sinyalde hisse + opsiyon birlikte)
+                    if self._options_enabled and decision["confidence"] >= 65:
+                        try:
+                            opt = self.options_engine.evaluate_option_trade(
+                                symbol, analysis, decision, OPTIONS_CONFIG
+                            )
+                            if opt and opt["type"] == "CALL":
+                                self.options_executor.execute_call(
+                                    opt, analysis, OPTIONS_CONFIG
+                                )
+                        except Exception:
+                            pass
                 else:
                     logger.debug(f"  {symbol} GATE BLOK: {block_reason}")
+
+                    # Gate'den geçemese bile opsiyon dene (daha az risk)
+                    if self._options_enabled and decision["confidence"] >= 55:
+                        try:
+                            opt = self.options_engine.evaluate_option_trade(
+                                symbol, analysis, decision, OPTIONS_CONFIG
+                            )
+                            if opt and opt["type"] == "CALL":
+                                self.options_executor.execute_call(
+                                    opt, analysis, OPTIONS_CONFIG
+                                )
+                        except Exception:
+                            pass
 
             # === SHORT — BOT_MODE: 'short_only' veya 'both' ===
             elif (decision["signal"] == "SHORT"
@@ -632,6 +723,19 @@ class StockBot:
                 if self._market_regime == "BEAR":
                     analysis["reasons"].append("🐻 BEAR_MODE")
                 self.short_executor.execute_short(symbol, analysis, config, SHORT_CONFIG)
+
+                # SHORT sinyalinde PUT opsiyon da ekle
+                if self._options_enabled and decision["confidence"] >= 55:
+                    try:
+                        opt = self.options_engine.evaluate_option_trade(
+                            symbol, analysis, decision, OPTIONS_CONFIG
+                        )
+                        if opt and opt["type"] == "PUT":
+                            self.options_executor.execute_put(
+                                opt, analysis, OPTIONS_CONFIG
+                            )
+                    except Exception:
+                        pass
 
         except Exception as e:
             logger.debug(f"  {symbol} analiz hatası: {e}")
@@ -893,7 +997,8 @@ class StockBot:
             logger.info(
                 f"  💓 ${equity:,.2f} ({pnl:+.2f}/{pnl_pct:+.1f}%) | "
                 f"Cash: ${cash:,.2f} | "
-                f"Poz: {len(self.positions)} [{', '.join(pos_details) or 'yok'}] | "
+                f"Poz: {len(self.positions)}L/{len(self.short_positions)}S/{len(self.options_positions)}O "
+                f"[{', '.join(pos_details) or 'yok'}] | "
                 f"İşlem: {len(self.trades_today)} | "
                 f"DT: {pdt_status['week_day_trades']}/{pdt_status['max_day_trades']} | "
                 f"Zarar serisi: {self._consecutive_losses} | "
@@ -1016,6 +1121,7 @@ class StockBot:
             data = {
                 "positions": self.positions,
                 "short_positions": self.short_positions,
+                "options_positions": self.options_positions,
                 "last_trade_time": {
                     k: (v.isoformat() if hasattr(v, 'isoformat') else str(v))
                     for k, v in self.last_trade_time.items()
@@ -1060,9 +1166,14 @@ class StockBot:
                             "partial_covered": meta.get("partial_covered", False),
                             "synced_from_alpaca": False,
                         })
+                # Options pozisyon metadata'sını yükle
+                saved_options = data.get("options_positions", {})
+                if saved_options:
+                    self.options_positions = saved_options
                 self._consecutive_losses = data.get("consecutive_losses", 0)
                 self._symbol_consecutive_losses = data.get("symbol_consecutive_losses", {})
-                logger.info(f"  📁 Metadata yüklendi ({len(self.positions)} long + {len(self.short_positions)} short)")
+                opt_count = len(self.options_positions)
+                logger.info(f"  📁 Metadata yüklendi ({len(self.positions)} long + {len(self.short_positions)} short + {opt_count} options)")
         except Exception as e:
             logger.debug(f"  Pozisyon metadata yüklenemedi: {e}")
 
@@ -1103,6 +1214,8 @@ class StockBot:
             self.client.close_all_positions(cancel_orders=True)
             logger.error("  Tüm pozisyonlar kapatıldı, emirler iptal edildi.")
             self.positions.clear()
+            self.short_positions.clear()
+            self.options_positions.clear()
         except Exception as e:
             logger.error(f"  Acil kapanış hatası: {e}")
 

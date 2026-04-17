@@ -480,3 +480,78 @@ DATA_CONFIG = {
     "max_acceptable_delay_seconds": 5,
     "warn_on_delayed_data": True,
 }
+
+# ============================================================
+# OPTIONS TRADING AYARLARI (CALL / PUT)
+# ============================================================
+OPTIONS_CONFIG = {
+    # === ANA KONTROL ===
+    "options_enabled": True,
+    "options_paper_only": True,              # Sadece paper'da aktif
+
+    # === POZİSYON LİMİTLERİ ===
+    "options_max_positions": 5,              # Max 5 açık opsiyon
+    "options_max_per_symbol": 2,             # Aynı hissede max 2
+    "options_max_position_usd": 1000,        # Max $1000/kontrat grubu (live'da $2000)
+    "options_max_exposure_pct": 0.20,        # Sermayenin max %20'si opsiyon
+
+    # === KONTRAT SEÇİM KRİTERLERİ ===
+    "options_min_delta": 0.25,               # Min delta (çok OTM olmasın)
+    "options_max_delta": 0.55,               # Max delta (çok ITM pahalı)
+    "options_preferred_delta": 0.40,         # İdeal delta (ATM yakını)
+    "options_min_expiry_days": 5,            # Min 5 gün vade
+    "options_max_expiry_days": 21,           # Max 3 hafta (theta dengesi)
+    "options_preferred_expiry_days": 10,     # İdeal 10 gün
+    "options_min_open_interest": 50,         # Likidite filtresi
+    "options_max_spread_pct": 0.10,          # Max %10 bid-ask spread
+
+    # === RİSK YÖNETİMİ ===
+    "options_stop_loss_pct": 0.40,           # %40 zarar → kapat
+    "options_take_profit_pct": 0.80,         # %80 kar → kapat
+    "options_partial_profit_pct": 0.50,      # %50 karda yarısını sat
+    "options_close_before_expiry_days": 1,   # Vadeye 1 gün kala kapat
+    "options_max_theta_decay_pct": 0.05,     # Günlük %5+ theta kaybı → kapat
+
+    # === SİNYAL EŞİKLERİ ===
+    "options_min_confidence": 55,            # Min %55 güven (hisseden yüksek)
+    "options_call_min_confidence": 55,       # CALL için min güven
+    "options_put_min_confidence": 55,        # PUT için min güven
+
+    # === KARA LİSTE (opsiyon likiditesi düşük olanlar) ===
+    "options_blacklist": [
+        "RIVN", "LCID", "NIO",              # Düşük hacimli EV'ler
+        "MARA", "RIOT",                      # Kripto madenciliği
+        "SQQQ", "SH", "SPXS",               # Ters ETF
+    ],
+
+    # === TERCİH EDİLEN (yüksek opsiyon likiditesi) ===
+    "options_preferred_symbols": [
+        "AAPL", "MSFT", "NVDA", "META", "AMZN",
+        "GOOGL", "TSLA", "AMD", "SPY", "QQQ",
+    ],
+}
+
+# ============================================================
+# PAPER HESAP AGRESİF AYARLAR
+# Paper'da daha hızlı ve agresif trade etmek için override'lar.
+# Live hesapta bu ayarlar UYGULANMAZ.
+# ============================================================
+PAPER_AGGRESSIVE_CONFIG = {
+    # === HİSSE AYARLARI (override) ===
+    "max_position_usd": 5000,                # $200 → $5000
+    "max_open_positions": 8,                  # 3 → 8
+    "min_confidence_score": 40,               # 50 → 40 (düşük eşik)
+    "scan_interval_seconds": 15,              # 30 → 15 (daha sık tara)
+    "stop_loss_pct": 0.05,                    # %4 → %5 (biraz daha geniş)
+    "take_profit_pct": 0.06,                  # %8 → %6 (daha hızlı kar al)
+    "sell_cooldown_seconds": 120,             # 5dk → 2dk (daha hızlı geri gir)
+
+    # === SHORT AYARLARI (override) ===
+    "short_max_positions": 4,                 # 3 → 4
+    "short_max_position_usd": 4000,           # $2000 → $4000
+    "short_min_confidence": 35,               # 40 → 35
+
+    # === OPTIONS ===
+    "enable_options": True,
+    "prefer_options_over_stock": True,         # Güçlü sinyalde opsiyon tercih et
+}
