@@ -71,6 +71,7 @@ class OrderExecutor:
                     sector_weight=analysis.get("sector_weight", 1.0),
                 )
                 max_invest = sizing["position_usd"]
+                tier_weight = sizing.get("weight", 0.20)  # FIX: NameError önlemi
                 if max_invest <= 0:
                     logger.debug(f"  {symbol} PositionSizer: {sizing['reasoning']}")
                     return False

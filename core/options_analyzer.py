@@ -78,7 +78,19 @@ class OptionsAnalyzer:
 
             # En yüksek skorlu kontratı seç
             scored.sort(key=lambda x: x[0], reverse=True)
-            best_score, best_contract = scored[0]
+
+            # Top 5 kontratı Greeks ile yeniden skorla
+            best_contract = None
+            best_score = -1
+            for score, contract in scored[:5]:
+                greeks_bonus = self._get_greeks_bonus(contract, config)
+                final_score = score + greeks_bonus
+                if final_score > best_score:
+                    best_score = final_score
+                    best_contract = contract
+
+            if best_contract is None:
+                return None
 
             return {
                 "contract": best_contract,
@@ -240,6 +252,74 @@ class OptionsAnalyzer:
             logger.debug(f"  {contract_symbol} snapshot hatası: {e}")
 
         return None
+
+    def _get_greeks_bonus(self, contract, config: Dict) -> float:
+        """Greeks bazlı bonus skor hesapla (snapshot API ile).
+        
+        Delta filtresi:
+          - CALL: 0.25-0.65 arası ideal (ATM civarı)
+          - PUT: -0.65 ile -0.25 arası ideal
+          - Çok düşük delta = çok OTM (ucuz ama düşük kazanç ihtimali)
+          - Çok yüksek delta = çok ITM (pahalı, az kaldıraç)
+        """
+        try:
+            if not self.data_client:
+                return 0.0
+
+            snapshot = self.get_contract_snapshot(contract.symbol)
+            if not snapshot:
+                return 0.0
+
+            bonus = 0.0
+            greeks = snapshot.get("greeks")
+
+            if greeks and hasattr(greeks, "delta") and greeks.delta is not None:
+                delta = abs(float(greeks.delta))
+                min_delta = config.get("options_min_delta", 0.25)
+                max_delta = config.get("options_max_delta", 0.65)
+                preferred_delta = config.get("options_preferred_delta", 0.40)
+
+                # Delta aralık kontrolü
+                if delta < min_delta or delta > max_delta:
+                    return -50  # Aralık dışı → büyük ceza
+                
+                # İdeal delta'ya yakınlık bonusu
+                delta_diff = abs(delta - preferred_delta)
+                bonus += max(0, 20 - delta_diff * 60)
+
+            # Theta cezası (günlük değer kaybı)
+            if greeks and hasattr(greeks, "theta") and greeks.theta is not None:
+                theta = float(greeks.theta)
+                if theta < -0.15:
+                    bonus -= 10  # Çok fazla theta kaybı
+                elif theta < -0.05:
+                    bonus -= 5
+
+            # IV skoru
+            iv = snapshot.get("implied_volatility")
+            if iv is not None:
+                iv = float(iv)
+                if 0.3 <= iv <= 0.8:
+                    bonus += 5  # Makul IV
+                elif iv > 1.5:
+                    bonus -= 10  # Aşırı pahalı
+
+            # Bid-Ask Spread kontrolü (likidite)
+            bid = snapshot.get("bid")
+            ask = snapshot.get("ask")
+            if bid and ask and bid > 0:
+                spread_pct = (ask - bid) / bid
+                max_spread = config.get("options_max_spread_pct", 0.15)
+                if spread_pct > max_spread:
+                    return -50  # Çok geniş spread → reddet
+                elif spread_pct < 0.05:
+                    bonus += 10  # Dar spread = iyi likidite
+
+            return bonus
+
+        except Exception as e:
+            logger.debug(f"  Greeks bonus hatası: {e}")
+            return 0.0
 
     def estimate_max_loss(self, contract_price: float, qty: int = 1) -> float:
         """Opsiyon alımında max kayıp = premium × 100 × adet."""

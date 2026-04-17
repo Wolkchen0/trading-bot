@@ -242,9 +242,16 @@ class StockBot:
         # === PAPER AGRESİF MOD ===
         if is_paper:
             for key, value in PAPER_AGGRESSIVE_CONFIG.items():
-                if key in config:
-                    config[key] = value
+                if key.startswith("short_"):
+                    SHORT_CONFIG[key] = value  # Short ayarları SHORT_CONFIG'a
+                elif key.startswith("enable_") or key.startswith("prefer_"):
+                    pass  # Bunlar sadece referans, config'a eklenmez
+                else:
+                    config[key] = value  # Geri kalan her şey STOCK_CONFIG'a
             logger.info("  📈 PAPER AGGRESSIVE MODE: Aktif")
+            logger.info(f"     Max poz: {config.get('max_open_positions')} | "
+                        f"Güven: {config.get('min_confidence_score')} | "
+                        f"Pozisyon: ${config.get('max_position_usd')}")
 
         # === POZİSYON SENKRONİZASYONU (restart-safe) ===
         self._sync_positions_from_alpaca()
@@ -311,6 +318,18 @@ class StockBot:
                 # After-hours → sadece pozisyon yönetimi
                 if market_status["status"] == "AFTER_HOURS":
                     self._manage_positions(config)
+                    # Short pozisyon yönetimi (after-hours)
+                    if BOT_MODE in ("short_only", "both") and SHORT_CONFIG.get("short_enabled", False):
+                        try:
+                            self.position_manager.manage_short_positions(config, SHORT_CONFIG)
+                        except Exception as e:
+                            logger.debug(f"  AH Short yonetim hatasi: {e}")
+                    # Options pozisyon yönetimi (after-hours)
+                    if self._options_enabled:
+                        try:
+                            self.options_manager.manage_positions(OPTIONS_CONFIG)
+                        except Exception as e:
+                            logger.debug(f"  AH Options yonetim hatasi: {e}")
                     time.sleep(30)
                     continue
 
@@ -359,17 +378,47 @@ class StockBot:
                     try:
                         self.options_manager.manage_positions(OPTIONS_CONFIG)
                     except Exception as e:
-                        logger.debug(f"  Options pozisyon yonetim hatasi: {e}")
+                        self._opt_mgr_errors = getattr(self, '_opt_mgr_errors', 0) + 1
+                        if self._opt_mgr_errors >= 3:
+                            logger.warning(f"  Options pozisyon yonetim hatasi (ardısık {self._opt_mgr_errors}x): {e}")
+                            self._opt_mgr_errors = 0
+                        else:
+                            logger.debug(f"  Options pozisyon yonetim hatasi: {e}")
 
                 # Signal Queue kontrolu — bekleyen sinyalleri kontrol et
                 try:
                     ready_signals = self.signal_queue.check_entries(self)
                     for sig in ready_signals:
                         sym = sig["symbol"]
+                        sig_analysis = sig.get("analysis", {})
                         if sig["signal"] == "BUY" and BOT_MODE in ("long_only", "both"):
-                            self.executor.execute_buy(sym, sig["analysis"], config)
+                            self.executor.execute_buy(sym, sig_analysis, config)
+                            # Signal queue'dan gelen güçlü BUY sinyalinde opsiyon da ekle
+                            if self._options_enabled and sig.get("confidence", 0) >= 60:
+                                try:
+                                    opt = self.options_engine.evaluate_option_trade(
+                                        sym, sig_analysis,
+                                        {"signal": "BUY", "confidence": sig.get("confidence", 0)},
+                                        OPTIONS_CONFIG
+                                    )
+                                    if opt and opt["type"] == "CALL":
+                                        self.options_executor.execute_call(opt, sig_analysis, OPTIONS_CONFIG)
+                                except Exception:
+                                    pass
                         elif sig["signal"] == "SHORT" and BOT_MODE in ("short_only", "both"):
-                            self.short_executor.execute_short(sym, sig["analysis"], config, SHORT_CONFIG)
+                            self.short_executor.execute_short(sym, sig_analysis, config, SHORT_CONFIG)
+                            # Signal queue'dan gelen güçlü SHORT sinyalinde PUT da ekle
+                            if self._options_enabled and sig.get("confidence", 0) >= 60:
+                                try:
+                                    opt = self.options_engine.evaluate_option_trade(
+                                        sym, sig_analysis,
+                                        {"signal": "SHORT", "confidence": sig.get("confidence", 0)},
+                                        OPTIONS_CONFIG
+                                    )
+                                    if opt and opt["type"] == "PUT":
+                                        self.options_executor.execute_put(opt, sig_analysis, OPTIONS_CONFIG)
+                                except Exception:
+                                    pass
                 except Exception as e:
                     logger.debug(f"  Signal queue hatasi: {e}")
 
@@ -378,8 +427,8 @@ class StockBot:
                     time.sleep(10)
                     continue
 
-                # Mevcut pozisyon sayısı
-                open_count = len(self.positions)
+                # Mevcut toplam pozisyon sayısı (long + short + options)
+                open_count = len(self.positions) + len(self.short_positions) + len(self.options_positions)
                 max_positions = config.get("max_open_positions", 3)
 
                 if open_count >= max_positions:
@@ -1027,9 +1076,21 @@ class StockBot:
         self._last_status_time = datetime.now()
         self._log_heartbeat()
 
-        # Gunluk Telegram raporu (gunde 1 kez, 15:50-16:00 arasi)
+        # Gunluk Telegram raporu (gunde 1 kez, NYSE kapanisina yakin)
+        # ET timezone kullan (sunucu timezone'undan bagimsiz)
         now = datetime.now()
-        if (now.hour == 15 and now.minute >= 50 and
+        try:
+            import pytz
+            et_tz = pytz.timezone('US/Eastern')
+            now_et = datetime.now(et_tz)
+            is_report_time = (now_et.hour == 15 and now_et.minute >= 50)
+        except ImportError:
+            # pytz yoksa UTC-4 tahmini (DST doneminde)
+            utc_hour = now.utcnow().hour
+            est_hour = (utc_hour - 4) % 24
+            is_report_time = (est_hour == 15 and now.minute >= 50)
+
+        if (is_report_time and
             getattr(self, '_daily_report_date', None) != date.today()):
             try:
                 if hasattr(self, 'notifier'):
@@ -1048,11 +1109,13 @@ class StockBot:
         
         Alpaca'da qty > 0 = LONG, qty < 0 = SHORT pozisyon.
         BOT_MODE'a göre sadece ilgili pozisyonlar sync edilir.
+        Options kontratları asset_class = 'us_option' olarak gelir.
         """
         try:
             alpaca_positions = self.client.get_all_positions()
             synced_long = 0
             synced_short = 0
+            synced_options = 0
 
             for pos in alpaca_positions:
                 symbol = pos.symbol
@@ -1060,6 +1123,37 @@ class StockBot:
                 entry_price = float(pos.avg_entry_price)
                 current_price = float(pos.current_price)
                 unrealized_pl = float(pos.unrealized_pl)
+                asset_class = getattr(pos, 'asset_class', 'us_equity')
+
+                # OPTIONS pozisyon (us_option asset class)
+                if asset_class == 'us_option' or (len(symbol) > 10 and any(c in symbol for c in 'CP')):
+                    if symbol not in self.options_positions:
+                        # Kontrat sembolünden underlying çıkar (AAPL260425C00200000 -> AAPL)
+                        underlying = ''
+                        for i, c in enumerate(symbol):
+                            if c.isdigit():
+                                underlying = symbol[:i]
+                                break
+                        opt_type = 'CALL' if 'C' in symbol[len(underlying):len(underlying)+7] else 'PUT'
+                        self.options_positions[symbol] = {
+                            "underlying": underlying,
+                            "type": opt_type,
+                            "strike": 0,  # Alpaca'dan alınamıyor, metadata'dan yüklenecek
+                            "expiry": "",
+                            "qty": int(abs(qty)),
+                            "entry_price": entry_price,
+                            "cost_basis": entry_price * 100 * int(abs(qty)),
+                            "entry_time": datetime.now().isoformat(),
+                            "synced_from_alpaca": True,
+                            "highest_price": current_price,
+                            "lowest_price": current_price,
+                        }
+                        synced_options += 1
+                        logger.info(
+                            f"  🔄 OPTIONS sync: {symbol} ({underlying} {opt_type}) | "
+                            f"P&L: ${unrealized_pl:+.2f}"
+                        )
+                    continue
 
                 if qty > 0:
                     # LONG pozisyon
@@ -1095,8 +1189,18 @@ class StockBot:
                         )
 
             # Bot'ta var ama Alpaca'da olmayan pozisyonları temizle
-            alpaca_long_symbols = {pos.symbol for pos in alpaca_positions if float(pos.qty) > 0}
-            alpaca_short_symbols = {pos.symbol for pos in alpaca_positions if float(pos.qty) < 0}
+            alpaca_long_symbols = {
+                pos.symbol for pos in alpaca_positions
+                if float(pos.qty) > 0 and getattr(pos, 'asset_class', 'us_equity') != 'us_option'
+            }
+            alpaca_short_symbols = {
+                pos.symbol for pos in alpaca_positions
+                if float(pos.qty) < 0 and getattr(pos, 'asset_class', 'us_equity') != 'us_option'
+            }
+            alpaca_option_symbols = {
+                pos.symbol for pos in alpaca_positions
+                if getattr(pos, 'asset_class', '') == 'us_option' or (len(pos.symbol) > 10)
+            }
 
             for symbol in list(self.positions.keys()):
                 if symbol not in alpaca_long_symbols:
@@ -1108,9 +1212,14 @@ class StockBot:
                     logger.warning(f"  🗑️ SHORT temizlendi (Alpaca'da yok): {symbol}")
                     self.short_positions.pop(symbol)
 
-            total = synced_long + synced_short
+            for symbol in list(self.options_positions.keys()):
+                if symbol not in alpaca_option_symbols:
+                    logger.warning(f"  🗑️ OPTIONS temizlendi (Alpaca'da yok): {symbol}")
+                    self.options_positions.pop(symbol)
+
+            total = synced_long + synced_short + synced_options
             if total > 0:
-                logger.info(f"  Sync: {synced_long} long + {synced_short} short = {total} pozisyon")
+                logger.info(f"  Sync: {synced_long} long + {synced_short} short + {synced_options} options = {total} pozisyon")
 
         except Exception as e:
             logger.error(f"  Pozisyon sync hatası: {e}")
