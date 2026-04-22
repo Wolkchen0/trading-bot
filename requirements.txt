@@ -8,17 +8,26 @@ numpy>=1.24.0
 # Technical Analysis
 ta>=0.11.0
 
+# Machine Learning
+scikit-learn>=1.3.0
+
 # Utilities
 python-dotenv>=1.0.0
 requests>=2.31.0
 schedule>=1.2.0
 pytz>=2024.1
 
-# NLP Sentiment Analysis (lightweight — FinBERT disabled for Railway memory)
+# NLP Sentiment Analysis
 vaderSentiment>=3.3.2
 
 # X (Twitter) Scraper — ücretsiz, API key gerekmez
 ntscraper>=0.3.0
 
+# FinBERT — Finansal domain NLP (torch is installed separately in Dockerfile with CPU-only)
+transformers>=4.35.0
+
 # Backtesting — Geçmiş veri çekme
 yfinance>=0.2.30
+
+# Testing
+pytest>=7.4.0

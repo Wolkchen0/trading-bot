@@ -1,24 +1,46 @@
 """
-FinBERT Analyzer — Finansal Domain NLP Sentiment Analizi
+FinBERT Analyzer — Finansal Domain NLP Sentiment Analizi (ONNX Runtime)
 
-HuggingFace ProsusAI/finbert modeli ile finansal metinlerin
-duygu analizini yapar. VADER'dan ~%20 daha doğru.
+ONNX Runtime ile ProsusAI/finbert modeli kullanılır.
+PyTorch'a gerek YOKTUR — RAM kullanımı ~150MB (PyTorch ile ~1.5GB'dı).
 
-Fallback: FinBERT yüklenemezse → VADER kullanılır.
+Katmanlar:
+  1. ONNX FinBERT (en doğru — ~%85 accuracy)
+  2. VADER fallback (orta — ~%65 accuracy)
+  3. Basit kelime sayma (son çare)
 """
+import os
 import time
+import logging
+from pathlib import Path
 from typing import Dict, List, Optional
-from utils.logger import logger
 
-# FinBERT model yükleme (opsiyonel — yoksa VADER'a düş)
-FINBERT_AVAILABLE = False
-_finbert_pipeline = None
+logger = logging.getLogger("TradingBot")
 
+# ============================================================
+# ONNX Runtime (PyTorch yerine)
+# ============================================================
+ONNX_AVAILABLE = False
 try:
-    from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-    FINBERT_AVAILABLE = True
+    import onnxruntime as ort
+    import numpy as np
+    ONNX_AVAILABLE = True
 except ImportError:
-    logger.info("transformers yuklu degil, VADER fallback kullanilacak")
+    logger.info("onnxruntime yuklu degil, VADER fallback kullanilacak")
+
+# Tokenizer (transformers'ın hafif versiyonu)
+TOKENIZER_AVAILABLE = False
+_tokenizer = None
+try:
+    from tokenizers import Tokenizer
+    TOKENIZER_AVAILABLE = True
+except ImportError:
+    try:
+        # Alternatif: transformers'ın sadece tokenizer kısmı
+        from transformers import AutoTokenizer
+        TOKENIZER_AVAILABLE = True
+    except ImportError:
+        logger.info("tokenizer yuklu degil, VADER fallback kullanilacak")
 
 # VADER fallback
 try:
@@ -27,21 +49,38 @@ try:
 except ImportError:
     VADER_AVAILABLE = False
 
+# Model cache dizini
+MODEL_CACHE_DIR = Path(os.getenv("FINBERT_CACHE_DIR", "/app/models/finbert"))
+ONNX_MODEL_PATH = MODEL_CACHE_DIR / "model.onnx"
+TOKENIZER_PATH = MODEL_CACHE_DIR / "tokenizer.json"
+
+# Label mapping (FinBERT output sırası)
+FINBERT_LABELS = ["positive", "negative", "neutral"]
+
+
+def softmax(logits):
+    """Numpy softmax."""
+    exp = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+    return exp / np.sum(exp, axis=-1, keepdims=True)
+
 
 class FinBERTAnalyzer:
     """
-    FinBERT tabanlı finansal metin duygu analizi.
+    FinBERT tabanlı finansal metin duygu analizi — ONNX Runtime ile.
+    
+    PyTorch GEREKMEZ. RAM: ~150MB (PyTorch ile ~1.5GB'dı).
     
     Kullanım:
         fb = FinBERTAnalyzer()
-        result = fb.analyze("Bitcoin surges to new all-time high")
-        # {'label': 'positive', 'score': 0.95, 'confidence': 0.95}
+        result = fb.analyze("Tesla stock surges 10%")
+        # {'label': 'positive', 'score': 0.95, 'confidence': 0.95, 'source': 'finbert'}
     """
 
     MODEL_NAME = "ProsusAI/finbert"
     
     def __init__(self):
-        self.pipeline = None
+        self.session = None
+        self.tokenizer = None
         self.vader = None
         self.model_loaded = False
         self._load_attempts = 0
@@ -76,8 +115,8 @@ class FinBERTAnalyzer:
             logger.info("FinBERT yuklenemedi, VADER fallback aktif")
 
     def _load_model(self):
-        """FinBERT modelini yükle (lazy loading)."""
-        if not FINBERT_AVAILABLE:
+        """ONNX FinBERT modelini yükle."""
+        if not ONNX_AVAILABLE:
             return
         
         if self._load_attempts >= self._max_load_attempts:
@@ -86,25 +125,192 @@ class FinBERTAnalyzer:
         self._load_attempts += 1
         
         try:
-            logger.info(f"FinBERT modeli yukleniyor ({self.MODEL_NAME})...")
+            # ONNX model dosyası var mı kontrol et
+            if not ONNX_MODEL_PATH.exists():
+                logger.info(f"ONNX model bulunamadi: {ONNX_MODEL_PATH}")
+                logger.info("Model indiriliyor... (ilk sefer, ~300MB)")
+                self._download_and_convert_model()
+            
+            if not ONNX_MODEL_PATH.exists():
+                logger.warning("ONNX model indirilemedi")
+                return
+            
+            logger.info(f"FinBERT ONNX modeli yukleniyor...")
             start = time.time()
             
-            self.pipeline = pipeline(
-                "sentiment-analysis",
-                model=self.MODEL_NAME,
-                tokenizer=self.MODEL_NAME,
-                device=-1,  # CPU (GPU yoksa)
-                truncation=True,
-                max_length=512,
+            # ONNX Runtime session
+            sess_options = ort.SessionOptions()
+            sess_options.inter_op_num_threads = 1
+            sess_options.intra_op_num_threads = 2
+            sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            
+            self.session = ort.InferenceSession(
+                str(ONNX_MODEL_PATH),
+                sess_options,
+                providers=['CPUExecutionProvider']
             )
+            
+            # Tokenizer yükle
+            self._load_tokenizer()
+            
+            if self.tokenizer is None:
+                logger.warning("Tokenizer yuklenemedi, ONNX iptal")
+                self.session = None
+                return
             
             elapsed = time.time() - start
             self.model_loaded = True
-            logger.info(f"FinBERT basariyla yuklendi ({elapsed:.1f}sn)")
+            logger.info(f"FinBERT ONNX basariyla yuklendi ({elapsed:.1f}sn)")
             
         except Exception as e:
-            logger.warning(f"FinBERT yukleme hatasi: {e}")
+            logger.warning(f"FinBERT ONNX yukleme hatasi: {e}")
             self.model_loaded = False
+
+    def _load_tokenizer(self):
+        """Tokenizer'ı yükle — önce lokal cache, yoksa HuggingFace'den."""
+        try:
+            if TOKENIZER_PATH.exists():
+                # Hızlı tokenizer (tokenizers kütüphanesi)
+                self.tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
+                self._tokenizer_type = "fast"
+                logger.info("Tokenizer lokal cache'den yuklendi")
+                return
+        except Exception:
+            pass
+        
+        try:
+            # HuggingFace'den tokenizer indir
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.MODEL_NAME,
+                cache_dir=str(MODEL_CACHE_DIR)
+            )
+            self._tokenizer_type = "auto"
+            logger.info("Tokenizer HuggingFace'den yuklendi")
+        except ImportError:
+            # transformers yoksa, tokenizers kütüphanesi ile dene
+            try:
+                from huggingface_hub import hf_hub_download
+                tokenizer_file = hf_hub_download(
+                    repo_id=self.MODEL_NAME,
+                    filename="tokenizer.json",
+                    cache_dir=str(MODEL_CACHE_DIR)
+                )
+                self.tokenizer = Tokenizer.from_file(tokenizer_file)
+                self._tokenizer_type = "fast"
+                # Lokal cache'e kopyala
+                import shutil
+                TOKENIZER_PATH.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tokenizer_file, str(TOKENIZER_PATH))
+                logger.info("Tokenizer hub'dan indirildi ve cache'lendi")
+            except Exception as e:
+                logger.warning(f"Tokenizer yuklenemedi: {e}")
+                self.tokenizer = None
+
+    def _download_and_convert_model(self):
+        """FinBERT modelini indir ve ONNX'e çevir."""
+        try:
+            MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            
+            # Yöntem 1: optimum ile export
+            try:
+                from optimum.onnxruntime import ORTModelForSequenceClassification
+                model = ORTModelForSequenceClassification.from_pretrained(
+                    self.MODEL_NAME,
+                    export=True,
+                    cache_dir=str(MODEL_CACHE_DIR),
+                )
+                model.save_pretrained(str(MODEL_CACHE_DIR))
+                logger.info("ONNX model optimum ile export edildi")
+                return
+            except ImportError:
+                pass
+            
+            # Yöntem 2: Manuel torch → ONNX export
+            try:
+                import torch
+                from transformers import AutoModelForSequenceClassification, AutoTokenizer
+                
+                logger.info("PyTorch ile ONNX export yapiliyor...")
+                model = AutoModelForSequenceClassification.from_pretrained(self.MODEL_NAME)
+                tokenizer = AutoTokenizer.from_pretrained(self.MODEL_NAME)
+                model.eval()
+                
+                dummy = tokenizer("sample text", return_tensors="pt", padding=True, truncation=True, max_length=512)
+                
+                torch.onnx.export(
+                    model,
+                    (dummy["input_ids"], dummy["attention_mask"]),
+                    str(ONNX_MODEL_PATH),
+                    opset_version=14,
+                    input_names=["input_ids", "attention_mask"],
+                    output_names=["logits"],
+                    dynamic_axes={
+                        "input_ids": {0: "batch", 1: "seq"},
+                        "attention_mask": {0: "batch", 1: "seq"},
+                        "logits": {0: "batch"},
+                    }
+                )
+                tokenizer.save_pretrained(str(MODEL_CACHE_DIR))
+                logger.info("ONNX model PyTorch ile export edildi")
+                
+                # PyTorch ve model'i bellekten temizle
+                del model, tokenizer, dummy
+                if hasattr(torch, 'cuda'):
+                    torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                return
+            except ImportError:
+                pass
+            
+            # Yöntem 3: Pre-exported ONNX model indir (HuggingFace Hub)
+            try:
+                from huggingface_hub import hf_hub_download
+                # Community ONNX modeli dene
+                onnx_file = hf_hub_download(
+                    repo_id="philschmid/finbert-onnx",
+                    filename="model.onnx",
+                    cache_dir=str(MODEL_CACHE_DIR),
+                )
+                import shutil
+                ONNX_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(onnx_file, str(ONNX_MODEL_PATH))
+                logger.info("Pre-exported ONNX model indirildi (philschmid/finbert-onnx)")
+                return
+            except Exception as e:
+                logger.debug(f"Pre-exported model bulunamadi: {e}")
+            
+            logger.warning(
+                "ONNX model olusturulamadi. "
+                "Dockerfile'da pre-build adimi ekleyin veya "
+                "'pip install optimum[onnxruntime]' ile export yapin."
+            )
+            
+        except Exception as e:
+            logger.warning(f"Model indirme/export hatasi: {e}")
+
+    def _tokenize(self, text: str) -> dict:
+        """Metni tokenize et — tokenizer tipine göre."""
+        if self._tokenizer_type == "fast":
+            # tokenizers kütüphanesi
+            encoded = self.tokenizer.encode(text, add_special_tokens=True)
+            input_ids = np.array([encoded.ids[:512]], dtype=np.int64)
+            attention_mask = np.array([encoded.attention_mask[:512]], dtype=np.int64)
+            return {"input_ids": input_ids, "attention_mask": attention_mask}
+        else:
+            # transformers AutoTokenizer
+            encoded = self.tokenizer(
+                text, 
+                return_tensors="np",
+                padding=True,
+                truncation=True,
+                max_length=512
+            )
+            return {
+                "input_ids": encoded["input_ids"].astype(np.int64),
+                "attention_mask": encoded["attention_mask"].astype(np.int64),
+            }
 
     def _add_stock_lexicon(self):
         """VADER'a hisse senedi kelimeleri ekle (fallback için)."""
@@ -126,7 +332,7 @@ class FinBERTAnalyzer:
 
     def analyze(self, text: str) -> Dict:
         """
-        Metni analiz et — FinBERT veya VADER ile.
+        Metni analiz et — ONNX FinBERT veya VADER ile.
         
         Returns:
             {
@@ -144,8 +350,8 @@ class FinBERTAnalyzer:
                 "source": "none",
             }
 
-        # FinBERT ile analiz
-        if self.model_loaded and self.pipeline:
+        # ONNX FinBERT ile analiz
+        if self.model_loaded and self.session and self.tokenizer:
             return self._analyze_finbert(text)
         
         # VADER fallback
@@ -156,13 +362,22 @@ class FinBERTAnalyzer:
         return self._analyze_simple(text)
 
     def _analyze_finbert(self, text: str) -> Dict:
-        """FinBERT ile derin duygu analizi."""
+        """ONNX FinBERT ile derin duygu analizi."""
         try:
-            # FinBERT tahmin
-            result = self.pipeline(text[:512])[0]
+            # Tokenize
+            inputs = self._tokenize(text[:512])
             
-            label = result["label"].lower()
-            raw_score = result["score"]
+            # ONNX inference
+            outputs = self.session.run(None, inputs)
+            logits = outputs[0]
+            
+            # Softmax → olasılıklar
+            probs = softmax(logits)[0]
+            
+            # En yüksek olasılık
+            pred_idx = int(np.argmax(probs))
+            label = FINBERT_LABELS[pred_idx]
+            raw_score = float(probs[pred_idx])
             
             # Label → score dönüşümü
             if label == "positive":
@@ -192,7 +407,7 @@ class FinBERTAnalyzer:
             }
             
         except Exception as e:
-            logger.debug(f"FinBERT analiz hatasi: {e}")
+            logger.debug(f"FinBERT ONNX analiz hatasi: {e}")
             # Fallback to VADER
             if self.vader:
                 return self._analyze_vader(text)
@@ -268,5 +483,6 @@ class FinBERTAnalyzer:
         return {
             "finbert_loaded": self.model_loaded,
             "vader_available": self.vader is not None,
-            "active_source": "finbert" if self.model_loaded else ("vader" if self.vader else "simple"),
+            "active_source": "finbert-onnx" if self.model_loaded else ("vader" if self.vader else "simple"),
+            "onnx_available": ONNX_AVAILABLE,
         }

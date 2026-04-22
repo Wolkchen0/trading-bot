@@ -37,45 +37,98 @@ class AgentVote:
 
 
 class TechAgent:
-    """Teknik analiz ajanı — RSI, MACD, Ichimoku, ADX, OBV, Fibonacci, Divergence."""
+    """Teknik analiz ajanı — RSI, MACD, Ichimoku, ADX, OBV, Fibonacci, Divergence.
+    
+    v4.2 Fix: Bağımsız sinyal puanlama sistemi.
+    Her gösterge kendi puanını verir, toplam puan sinyal ve güven belirler.
+    Önceki bug: tech_score=0 → confidence=0 → her zaman %0 dönüyordu.
+    """
     
     NAME = "TechAgent"
     
     def analyze(self, tech_data: Dict) -> AgentVote:
-        score = tech_data.get("tech_score", 0)
-        confidence = min(abs(score) * 1.5, 100)
-        
+        # Bağımsız puanlama — her gösterge katkı sağlar
+        indie_score = 0  # -100 to +100 arası
         reasons = []
         
-        # RSI
+        # === RSI (ağırlık: yüksek) ===
         rsi = tech_data.get("rsi", 50)
-        if rsi < 30:
+        if rsi < 25:
+            indie_score += 25
+            reasons.append(f"RSI={rsi:.0f} aşırı satım 🟢")
+        elif rsi < 30:
+            indie_score += 18
             reasons.append(f"RSI={rsi:.0f} oversold")
+        elif rsi < 40:
+            indie_score += 8
+        elif rsi > 80:
+            indie_score -= 25
+            reasons.append(f"RSI={rsi:.0f} aşırı alım 🔴")
         elif rsi > 72:
+            indie_score -= 18
             reasons.append(f"RSI={rsi:.0f} overbought")
+        elif rsi > 65:
+            indie_score -= 5
         
-        # MACD
+        # === MACD (ağırlık: orta-yüksek) ===
         macd_signal = tech_data.get("macd_signal", "NEUTRAL")
-        if macd_signal != "NEUTRAL":
-            reasons.append(f"MACD={macd_signal}")
+        if macd_signal == "BULLISH":
+            indie_score += 15
+            reasons.append("MACD=BULLISH")
+        elif macd_signal == "BEARISH":
+            indie_score -= 15
+            reasons.append("MACD=BEARISH")
         
-        # Ichimoku
+        # === Ichimoku (ağırlık: orta) ===
         ichimoku = tech_data.get("ichimoku_signal", "NEUTRAL")
-        if ichimoku != "NEUTRAL":
-            reasons.append(f"Ichimoku={ichimoku}")
+        if ichimoku == "BULLISH":
+            indie_score += 12
+            reasons.append("Ichimoku=BULLISH")
+        elif ichimoku == "BEARISH":
+            indie_score -= 12
+            reasons.append("Ichimoku=BEARISH")
         
-        # ADX
+        # === ADX Trend Gücü (ağırlık: düşük-orta) ===
         adx = tech_data.get("adx", 0)
-        if adx > 25:
+        if adx > 30:
+            indie_score += 8 if indie_score > 0 else -8  # Mevcut yönü güçlendir
             reasons.append(f"ADX={adx:.0f} güçlü trend")
+        elif adx > 25:
+            indie_score += 5 if indie_score > 0 else -5
         
-        # Sinyal belirle
-        if score >= 15:
+        # === EMA Trend (ağırlık: orta) ===
+        ema_trend = tech_data.get("ema_trend", "NEUTRAL")
+        if ema_trend == "BULLISH":
+            indie_score += 10
+        elif ema_trend == "BEARISH":
+            indie_score -= 10
+        
+        # === Bollinger Bands (ağırlık: düşük) ===
+        bb_position = tech_data.get("bb_position", "MIDDLE")
+        if bb_position == "BELOW":
+            indie_score += 8
+            reasons.append("BB alt bant altı")
+        elif bb_position == "ABOVE":
+            indie_score -= 8
+            reasons.append("BB üst bant üstü")
+        
+        # === Orijinal tech_score'u da dahil et (ağırlık: düşük) ===
+        orig_score = tech_data.get("tech_score", 0)
+        indie_score += orig_score * 0.3
+        
+        # === Sinyal ve Güven Hesapla ===
+        indie_score = max(-100, min(100, indie_score))
+        
+        if indie_score >= 12:
             signal = "BUY"
-        elif score <= -15:
+        elif indie_score <= -12:
             signal = "SELL"
         else:
             signal = "HOLD"
+        
+        # Güven: minimum %15 base + sinyal gücüne göre artar
+        confidence = 15 + min(abs(indie_score) * 0.85, 85)
+        confidence = min(confidence, 100)
         
         return AgentVote(
             self.NAME, signal, confidence,

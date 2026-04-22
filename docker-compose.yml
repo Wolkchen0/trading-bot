@@ -16,6 +16,7 @@ services:
       - BOT_MODE=long_only
       - ALPACA_KEY_PREFIX=LIVE
       - PYTHONUNBUFFERED=1
+      - FINBERT_CACHE_DIR=/app/models/finbert
     volumes:
       - ./logs/live:/app/logs
     logging:
@@ -41,6 +42,7 @@ services:
       - BOT_MODE=both
       - ALPACA_KEY_PREFIX=PAPER
       - PYTHONUNBUFFERED=1
+      - FINBERT_CACHE_DIR=/app/models/finbert
     volumes:
       - ./logs/short:/app/logs
     logging:

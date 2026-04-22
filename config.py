@@ -203,7 +203,7 @@ RISK_CONFIG = {
     "max_open_positions": 3,             # Max 3 açık pozisyon
     "risk_reward_ratio": 2.0,            # Min risk/ödül oranı (1:2)
     "trailing_stop_pct": 0.03,           # Trailing stop %3
-    "min_confidence_score": 50,          # Min sinyal güven puanı (%50)
+    "min_confidence_score": 35,          # Min sinyal güven puanı (%35 — önceki %50 çok yüksekti)
 }
 
 # ============================================================
@@ -383,7 +383,7 @@ SHORT_CONFIG = {
     "short_partial_profit_pct": 0.04,    # %4'de yarisini cover
 
     # === SINYAL ESIKLERI — Paper: daha dusuk esik ===
-    "short_min_confidence": 40 if _is_paper else 45,
+    "short_min_confidence": 40 if _is_paper else 38,
     "short_min_sell_score": 40 if _is_paper else 45,
     "short_atr_stop_multiplier": 2.0,
 
@@ -513,9 +513,9 @@ OPTIONS_CONFIG = {
     "options_max_theta_decay_pct": 0.05,     # Günlük %5+ theta kaybı → kapat
 
     # === SİNYAL EŞİKLERİ ===
-    "options_min_confidence": 55,            # Min %55 güven (hisseden yüksek)
-    "options_call_min_confidence": 55,       # CALL için min güven
-    "options_put_min_confidence": 55,        # PUT için min güven
+    "options_min_confidence": 45,            # Min %45 güven (hisseden yüksek)
+    "options_call_min_confidence": 45,       # CALL için min güven
+    "options_put_min_confidence": 45,        # PUT için min güven
 
     # === KARA LİSTE (opsiyon likiditesi düşük olanlar) ===
     "options_blacklist": [
