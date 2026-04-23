@@ -175,34 +175,30 @@ class FinBERTAnalyzer:
                 self._tokenizer_type = "fast"
                 logger.info("Tokenizer lokal cache'den yuklendi")
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Lokal tokenizer yuklenemedi: {e}")
         
         try:
-            # HuggingFace'den tokenizer indir
+            # HuggingFace'den tokenizer indir (transformers varsa)
             from transformers import AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.MODEL_NAME,
                 cache_dir=str(MODEL_CACHE_DIR)
             )
             self._tokenizer_type = "auto"
-            logger.info("Tokenizer HuggingFace'den yuklendi")
+            logger.info("Tokenizer HuggingFace'den yuklendi (transformers)")
         except ImportError:
-            # transformers yoksa, tokenizers kütüphanesi ile dene
+            # transformers yoksa, tokenizers kütüphanesi ile ONNX repo'dan indir
             try:
                 from huggingface_hub import hf_hub_download
-                tokenizer_file = hf_hub_download(
-                    repo_id=self.MODEL_NAME,
+                hf_hub_download(
+                    repo_id="jonngan/finbert-onnx",
                     filename="tokenizer.json",
-                    cache_dir=str(MODEL_CACHE_DIR)
+                    local_dir=str(MODEL_CACHE_DIR),
                 )
-                self.tokenizer = Tokenizer.from_file(tokenizer_file)
+                self.tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
                 self._tokenizer_type = "fast"
-                # Lokal cache'e kopyala
-                import shutil
-                TOKENIZER_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(tokenizer_file, str(TOKENIZER_PATH))
-                logger.info("Tokenizer hub'dan indirildi ve cache'lendi")
+                logger.info("Tokenizer ONNX repo'dan indirildi (jonngan/finbert-onnx)")
             except Exception as e:
                 logger.warning(f"Tokenizer yuklenemedi: {e}")
                 self.tokenizer = None
@@ -221,15 +217,21 @@ class FinBERTAnalyzer:
             # Yöntem 1: Pre-exported ONNX model indir (EN HAFİF — PyTorch gerekmez)
             try:
                 from huggingface_hub import hf_hub_download
-                onnx_file = hf_hub_download(
-                    repo_id="philschmid/finbert-onnx",
+                # Doğrulanmış ONNX repo: jonngan/finbert-onnx (440MB, 795+ download)
+                onnx_repo = "jonngan/finbert-onnx"
+                hf_hub_download(
+                    repo_id=onnx_repo,
                     filename="model.onnx",
-                    cache_dir=str(MODEL_CACHE_DIR),
+                    local_dir=str(MODEL_CACHE_DIR),
                 )
-                import shutil
-                ONNX_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(onnx_file, str(ONNX_MODEL_PATH))
-                logger.info("Pre-exported ONNX model indirildi (philschmid/finbert-onnx)")
+                logger.info(f"Pre-exported ONNX model indirildi ({onnx_repo})")
+                
+                # Tokenizer'ı da aynı ONNX repo'dan indir (uyumlu versiyon)
+                for f in ["tokenizer.json", "vocab.txt", "special_tokens_map.json", "config.json"]:
+                    try:
+                        hf_hub_download(repo_id=onnx_repo, filename=f, local_dir=str(MODEL_CACHE_DIR))
+                    except Exception:
+                        pass
                 return
             except Exception as e:
                 logger.debug(f"Pre-exported model bulunamadi: {e}")

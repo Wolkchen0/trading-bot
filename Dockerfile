@@ -11,31 +11,28 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # FinBERT ONNX modelini build sırasında indir (container başlarken bekleme yok)
 # PyTorch/optimum KULLANILMIYOR — sadece pre-exported model indiriliyor
+# Kaynak: jonngan/finbert-onnx (~440MB, BERT ONNX + tokenizer)
 # RAM kullanımı: ~200MB (eskiden 2GB+ idi)
 RUN python -c "\
 from huggingface_hub import hf_hub_download; \
-import os, shutil; \
+import os; \
 cache_dir = '/app/models/finbert'; \
 os.makedirs(cache_dir, exist_ok=True); \
-print('Downloading FinBERT tokenizer files...'); \
-for f in ['tokenizer.json', 'tokenizer_config.json', 'vocab.txt', 'special_tokens_map.json']: \
+repo = 'jonngan/finbert-onnx'; \
+files = ['model.onnx', 'tokenizer.json', 'tokenizer_config.json', 'vocab.txt', 'special_tokens_map.json', 'config.json']; \
+print(f'Downloading FinBERT ONNX from {repo}...'); \
+for f in files: \
     try: \
-        hf_hub_download('ProsusAI/finbert', f, local_dir=cache_dir); \
-        print(f'  ✓ {f}'); \
+        hf_hub_download(repo, f, local_dir=cache_dir); \
+        size = os.path.getsize(os.path.join(cache_dir, f)); \
+        print(f'  ✓ {f} ({size/1024/1024:.1f}MB)'); \
     except Exception as e: \
         print(f'  ✗ {f}: {e}'); \
-print('Downloading pre-exported ONNX model...'); \
-try: \
-    onnx_file = hf_hub_download('philschmid/finbert-onnx', 'model.onnx', cache_dir='/tmp/onnx'); \
-    shutil.copy2(onnx_file, os.path.join(cache_dir, 'model.onnx')); \
-    print('  ✓ model.onnx (pre-exported, no PyTorch needed)'); \
-except Exception as e: \
-    print(f'  ✗ ONNX model download failed: {e}'); \
-    print('  Will use VADER fallback at runtime'); \
+print('FinBERT ONNX download complete.'); \
 " || echo "Model pre-download failed, will download at runtime"
 
 # HuggingFace cache temizle (Docker image küçültsün)
-RUN rm -rf /root/.cache/huggingface /tmp/onnx
+RUN rm -rf /root/.cache/huggingface
 
 # Uygulama dosyaları
 COPY . .
