@@ -296,6 +296,7 @@ STOCK_CONFIG = {
     "partial_profit_pct": 0.05,             # %5'de yarısını sat
 
     # === SINYAL EŞİKLERİ ===
+    "min_confidence_score": 35,             # Min sinyal güven puanı (%35 — v4.2 düşürüldü)
     "rsi_oversold": 30,
     "rsi_overbought": 70,
     "min_volume_ratio": 1.3,

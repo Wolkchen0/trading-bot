@@ -23,8 +23,10 @@ vaderSentiment>=3.3.2
 # X (Twitter) Scraper — ücretsiz, API key gerekmez
 ntscraper>=0.3.0
 
-# FinBERT — Finansal domain NLP (torch is installed separately in Dockerfile with CPU-only)
-transformers>=4.35.0
+# FinBERT ONNX — PyTorch GEREKMEZ, RAM: ~150MB
+onnxruntime>=1.16.0
+tokenizers>=0.15.0
+huggingface_hub>=0.20.0
 
 # Backtesting — Geçmiş veri çekme
 yfinance>=0.2.30

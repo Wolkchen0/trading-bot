@@ -504,7 +504,9 @@ class AgentCoordinator:
             f"{'⚠️VETO' if risk_veto else ''}"
         )
         for v in votes:
-            logger.debug(
+            # Signal != HOLD ise agent detaylarini INFO'da goster (debug icin kritik)
+            log_fn = logger.info if final_signal != "HOLD" else logger.debug
+            log_fn(
                 f"    {v.agent_name}: {v.signal} "
                 f"({v.confidence:.0f}%) — {v.reasoning}"
             )

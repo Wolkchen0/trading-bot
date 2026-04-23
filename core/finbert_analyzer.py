@@ -208,11 +208,33 @@ class FinBERTAnalyzer:
                 self.tokenizer = None
 
     def _download_and_convert_model(self):
-        """FinBERT modelini indir ve ONNX'e çevir."""
+        """FinBERT modelini indir ve ONNX'e çevir.
+        
+        Öncelik sırası (en hafiften en ağıra):
+          1. Pre-exported ONNX (HuggingFace Hub) — PyTorch gerekmez
+          2. optimum ile export — optimum + transformers gerekir
+          3. Manuel torch → ONNX — torch + transformers gerekir
+        """
         try:
             MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             
-            # Yöntem 1: optimum ile export
+            # Yöntem 1: Pre-exported ONNX model indir (EN HAFİF — PyTorch gerekmez)
+            try:
+                from huggingface_hub import hf_hub_download
+                onnx_file = hf_hub_download(
+                    repo_id="philschmid/finbert-onnx",
+                    filename="model.onnx",
+                    cache_dir=str(MODEL_CACHE_DIR),
+                )
+                import shutil
+                ONNX_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(onnx_file, str(ONNX_MODEL_PATH))
+                logger.info("Pre-exported ONNX model indirildi (philschmid/finbert-onnx)")
+                return
+            except Exception as e:
+                logger.debug(f"Pre-exported model bulunamadi: {e}")
+            
+            # Yöntem 2: optimum ile export (transformers + optimum gerekir)
             try:
                 from optimum.onnxruntime import ORTModelForSequenceClassification
                 model = ORTModelForSequenceClassification.from_pretrained(
@@ -226,7 +248,7 @@ class FinBERTAnalyzer:
             except ImportError:
                 pass
             
-            # Yöntem 2: Manuel torch → ONNX export
+            # Yöntem 3: Manuel torch → ONNX export (en ağır — son çare)
             try:
                 import torch
                 from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -263,23 +285,6 @@ class FinBERTAnalyzer:
                 return
             except ImportError:
                 pass
-            
-            # Yöntem 3: Pre-exported ONNX model indir (HuggingFace Hub)
-            try:
-                from huggingface_hub import hf_hub_download
-                # Community ONNX modeli dene
-                onnx_file = hf_hub_download(
-                    repo_id="philschmid/finbert-onnx",
-                    filename="model.onnx",
-                    cache_dir=str(MODEL_CACHE_DIR),
-                )
-                import shutil
-                ONNX_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(onnx_file, str(ONNX_MODEL_PATH))
-                logger.info("Pre-exported ONNX model indirildi (philschmid/finbert-onnx)")
-                return
-            except Exception as e:
-                logger.debug(f"Pre-exported model bulunamadi: {e}")
             
             logger.warning(
                 "ONNX model olusturulamadi. "

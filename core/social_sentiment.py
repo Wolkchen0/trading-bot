@@ -61,8 +61,9 @@ class SocialSentimentAnalyzer:
         if X_AVAILABLE:
             try:
                 self.nitter = Nitter()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Nitter init hatasi (X devre disi): {e}")
+                self.nitter = None
 
         logger.info(
             f"SocialSentiment baslatildi — "
@@ -227,7 +228,10 @@ class SocialSentimentAnalyzer:
             }
 
         except Exception as e:
-            logger.debug(f"X/Twitter {ticker} hatası: {e}")
+            # ntscraper sık sık "Cannot choose from an empty sequence" hatası verir
+            # Bu, Nitter instance listesinin boş olmasından kaynaklanır — beklenen davranış
+            if "empty sequence" not in str(e).lower():
+                logger.debug(f"X/Twitter {ticker} hatası: {e}")
             return {"score": 0, "tweet_count": 0}
 
     # ============================================================
