@@ -28,19 +28,14 @@ try:
 except ImportError:
     logger.info("onnxruntime yuklu degil, VADER fallback kullanilacak")
 
-# Tokenizer (transformers'ın hafif versiyonu)
+# Tokenizer (tokenizers kütüphanesi — hafif, torch gerektirmez)
 TOKENIZER_AVAILABLE = False
 _tokenizer = None
 try:
     from tokenizers import Tokenizer
     TOKENIZER_AVAILABLE = True
 except ImportError:
-    try:
-        # Alternatif: transformers'ın sadece tokenizer kısmı
-        from transformers import AutoTokenizer
-        TOKENIZER_AVAILABLE = True
-    except ImportError:
-        logger.info("tokenizer yuklu degil, VADER fallback kullanilacak")
+    logger.info("tokenizers yuklu degil, VADER fallback kullanilacak")
 
 # VADER fallback
 try:
@@ -117,6 +112,11 @@ class FinBERTAnalyzer:
     def _load_model(self):
         """ONNX FinBERT modelini yükle."""
         if not ONNX_AVAILABLE:
+            logger.info("ONNX Runtime yuklu degil, FinBERT devre disi")
+            return
+        
+        if not TOKENIZER_AVAILABLE:
+            logger.info("tokenizers paketi yuklu degil, FinBERT devre disi")
             return
         
         if self._load_attempts >= self._max_load_attempts:
@@ -135,6 +135,16 @@ class FinBERTAnalyzer:
                 logger.warning("ONNX model indirilemedi")
                 return
             
+            # Tokenizer dosyası var mı kontrol et
+            if not TOKENIZER_PATH.exists():
+                logger.info(f"Tokenizer bulunamadi: {TOKENIZER_PATH}")
+                logger.info("Tokenizer indiriliyor...")
+                self._download_tokenizer()
+            
+            if not TOKENIZER_PATH.exists():
+                logger.warning("Tokenizer indirilemedi, FinBERT devre disi")
+                return
+            
             logger.info(f"FinBERT ONNX modeli yukleniyor...")
             start = time.time()
             
@@ -150,7 +160,7 @@ class FinBERTAnalyzer:
                 providers=['CPUExecutionProvider']
             )
             
-            # Tokenizer yükle
+            # Tokenizer yükle (sadece fast tokenizer — torch gerektirmez)
             self._load_tokenizer()
             
             if self.tokenizer is None:
@@ -160,61 +170,64 @@ class FinBERTAnalyzer:
             
             elapsed = time.time() - start
             self.model_loaded = True
-            logger.info(f"FinBERT ONNX basariyla yuklendi ({elapsed:.1f}sn)")
+            logger.info(f"✅ FinBERT ONNX basariyla yuklendi ({elapsed:.1f}sn)")
             
         except Exception as e:
             logger.warning(f"FinBERT ONNX yukleme hatasi: {e}")
+            import traceback
+            logger.debug(f"FinBERT traceback: {traceback.format_exc()}")
             self.model_loaded = False
 
     def _load_tokenizer(self):
-        """Tokenizer'ı yükle — önce lokal cache, yoksa HuggingFace'den."""
+        """Tokenizer'ı yükle — sadece fast tokenizer (torch gerektirmez)."""
         try:
             if TOKENIZER_PATH.exists():
-                # Hızlı tokenizer (tokenizers kütüphanesi)
+                # Hızlı tokenizer (tokenizers kütüphanesi — torch gerektirmez)
                 self.tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
                 self._tokenizer_type = "fast"
-                logger.info("Tokenizer lokal cache'den yuklendi")
+                logger.info("Tokenizer lokal cache'den yuklendi (fast)")
                 return
         except Exception as e:
-            logger.debug(f"Lokal tokenizer yuklenemedi: {e}")
+            logger.warning(f"Lokal tokenizer yuklenemedi: {e}")
         
+        # Tokenizer dosyası yoksa veya yüklenemiyorsa indir
         try:
-            # HuggingFace'den tokenizer indir (transformers varsa)
-            from transformers import AutoTokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.MODEL_NAME,
-                cache_dir=str(MODEL_CACHE_DIR)
-            )
-            self._tokenizer_type = "auto"
-            logger.info("Tokenizer HuggingFace'den yuklendi (transformers)")
-        except ImportError:
-            # transformers yoksa, tokenizers kütüphanesi ile ONNX repo'dan indir
-            try:
-                from huggingface_hub import hf_hub_download
-                hf_hub_download(
-                    repo_id="jonngan/finbert-onnx",
-                    filename="tokenizer.json",
-                    local_dir=str(MODEL_CACHE_DIR),
-                )
+            self._download_tokenizer()
+            if TOKENIZER_PATH.exists():
                 self.tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
                 self._tokenizer_type = "fast"
-                logger.info("Tokenizer ONNX repo'dan indirildi (jonngan/finbert-onnx)")
-            except Exception as e:
-                logger.warning(f"Tokenizer yuklenemedi: {e}")
-                self.tokenizer = None
+                logger.info("Tokenizer indirildi ve yuklendi")
+                return
+        except Exception as e:
+            logger.warning(f"Tokenizer indirme/yukleme hatasi: {e}")
+        
+        self.tokenizer = None
+        logger.warning("Tokenizer yuklenemedi — FinBERT devre disi")
+
+    def _download_tokenizer(self):
+        """Tokenizer dosyasını HuggingFace Hub'dan indir."""
+        try:
+            from huggingface_hub import hf_hub_download
+            MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            for f in ["tokenizer.json", "vocab.txt", "special_tokens_map.json"]:
+                try:
+                    hf_hub_download(
+                        repo_id="jonngan/finbert-onnx",
+                        filename=f,
+                        local_dir=str(MODEL_CACHE_DIR),
+                    )
+                except Exception:
+                    pass
+            logger.info("Tokenizer dosyalari indirildi")
+        except ImportError:
+            logger.warning("huggingface_hub yuklu degil, tokenizer indirilemez")
 
     def _download_and_convert_model(self):
-        """FinBERT modelini indir ve ONNX'e çevir.
-        
-        Öncelik sırası (en hafiften en ağıra):
-          1. Pre-exported ONNX (HuggingFace Hub) — PyTorch gerekmez
-          2. optimum ile export — optimum + transformers gerekir
-          3. Manuel torch → ONNX — torch + transformers gerekir
-        """
+        """FinBERT ONNX modelini indir (pre-exported — PyTorch gerekmez)."""
         try:
             MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             
-            # Yöntem 1: Pre-exported ONNX model indir (EN HAFİF — PyTorch gerekmez)
+            # Pre-exported ONNX model indir (EN HAFİF — PyTorch gerekmez)
             try:
                 from huggingface_hub import hf_hub_download
                 # Doğrulanmış ONNX repo: jonngan/finbert-onnx (440MB, 795+ download)
@@ -234,7 +247,7 @@ class FinBERTAnalyzer:
                         pass
                 return
             except Exception as e:
-                logger.debug(f"Pre-exported model bulunamadi: {e}")
+                logger.warning(f"Pre-exported model indirilemedi: {e}")
             
             # Yöntem 2: optimum ile export (transformers + optimum gerekir)
             try:
@@ -250,52 +263,17 @@ class FinBERTAnalyzer:
             except ImportError:
                 pass
             
-            # Yöntem 3: Manuel torch → ONNX export (en ağır — son çare)
-            try:
-                import torch
-                from transformers import AutoModelForSequenceClassification, AutoTokenizer
-                
-                logger.info("PyTorch ile ONNX export yapiliyor...")
-                model = AutoModelForSequenceClassification.from_pretrained(self.MODEL_NAME)
-                tokenizer = AutoTokenizer.from_pretrained(self.MODEL_NAME)
-                model.eval()
-                
-                dummy = tokenizer("sample text", return_tensors="pt", padding=True, truncation=True, max_length=512)
-                
-                torch.onnx.export(
-                    model,
-                    (dummy["input_ids"], dummy["attention_mask"]),
-                    str(ONNX_MODEL_PATH),
-                    opset_version=14,
-                    input_names=["input_ids", "attention_mask"],
-                    output_names=["logits"],
-                    dynamic_axes={
-                        "input_ids": {0: "batch", 1: "seq"},
-                        "attention_mask": {0: "batch", 1: "seq"},
-                        "logits": {0: "batch"},
-                    }
-                )
-                tokenizer.save_pretrained(str(MODEL_CACHE_DIR))
-                logger.info("ONNX model PyTorch ile export edildi")
-                
-                # PyTorch ve model'i bellekten temizle
-                del model, tokenizer, dummy
-                if hasattr(torch, 'cuda'):
-                    torch.cuda.empty_cache()
-                import gc
-                gc.collect()
-                return
-            except ImportError:
-                pass
-            
+            # NOT: PyTorch/torch artık KULLANILMIYOR.
+            # Container'da sadece onnxruntime + tokenizers var.
+            # Model mutlaka Dockerfile'da pre-download edilmeli.
             logger.warning(
                 "ONNX model olusturulamadi. "
-                "Dockerfile'da pre-build adimi ekleyin veya "
-                "'pip install optimum[onnxruntime]' ile export yapin."
+                "Dockerfile'da pre-build adimi ile model indirilmeli. "
+                "(jonngan/finbert-onnx reposu)"
             )
             
         except Exception as e:
-            logger.warning(f"Model indirme/export hatasi: {e}")
+            logger.warning(f"Model indirme hatasi: {e}")
 
     def _tokenize(self, text: str) -> dict:
         """Metni tokenize et — tokenizer tipine göre."""

@@ -75,6 +75,22 @@ class TechnicalAnalyzer:
         if ema_200 is not None:
             above_ema200 = current_price > ema_200
 
+        # === EMA TREND SİNYALİ (TechAgent için) ===
+        if ema_9 > ema_21 and current_price > ema_50:
+            ema_trend = "BULLISH"
+        elif ema_9 < ema_21 and current_price < ema_50:
+            ema_trend = "BEARISH"
+        else:
+            ema_trend = "NEUTRAL"
+
+        # === MACD SİNYALİ (TechAgent için) ===
+        if macd_hist > 0:
+            macd_signal_label = "BULLISH"
+        elif macd_hist < 0:
+            macd_signal_label = "BEARISH"
+        else:
+            macd_signal_label = "NEUTRAL"
+
         # === VOLUME ANALİZİ ===
         volume_ok = True
         volume_ratio = 1.0
@@ -108,6 +124,14 @@ class TechnicalAnalyzer:
         price_change_5 = (close.iloc[-1] - close.iloc[-5]) / close.iloc[-5] * 100
         price_change_1 = (close.iloc[-1] - close.iloc[-2]) / close.iloc[-2] * 100
         momentum_up = price_change_5 > 0 and price_change_1 > 0
+
+        # === BB POZİSYON (TechAgent için) ===
+        if current_price < bb_lower:
+            bb_position = "BELOW"
+        elif current_price > bb_upper:
+            bb_position = "ABOVE"
+        else:
+            bb_position = "MIDDLE"
 
         # === BUY SKORLAMA ===
         buy_score = 0
@@ -154,6 +178,7 @@ class TechnicalAnalyzer:
             reasons.append("VWAP↑")  # Fiyat VWAP çok üstünde = primli
 
         # === GELİŞMİŞ GÖSTERGELER ===
+        ichimoku_signal = "NEUTRAL"
         try:
             from ta.trend import IchimokuIndicator
             ichimoku = IchimokuIndicator(df["high"], df["low"], window1=9, window2=26, window3=52)
@@ -165,13 +190,16 @@ class TechnicalAnalyzer:
             if cloud_top > 0:
                 if current_price > cloud_top:
                     buy_score += 10
+                    ichimoku_signal = "BULLISH"
                     reasons.append("Ichi+")
                 elif current_price < cloud_bottom:
                     buy_score -= 10
+                    ichimoku_signal = "BEARISH"
                     reasons.append("Ichi-")
         except Exception:
             pass
 
+        adx_val = 0
         try:
             from ta.trend import ADXIndicator
             adx_ind = ADXIndicator(df["high"], df["low"], df["close"], window=14)
@@ -185,6 +213,7 @@ class TechnicalAnalyzer:
                     reasons.append(f"ADX:{adx_val:.0f}+")
                 elif adx_neg > adx_pos:
                     buy_score -= 5
+            adx_val = float(adx_val) if pd.notna(adx_val) else 0
         except Exception:
             pass
 
@@ -313,6 +342,9 @@ class TechnicalAnalyzer:
                 sell_score += 10
                 reasons.append("Breakdown")
 
+        # === TECH SCORE (TechAgent için birleşik skor) ===
+        tech_score = buy_score - sell_score
+
         # === KARAR ===
         if buy_score >= 45:
             signal = "BUY"
@@ -329,6 +361,7 @@ class TechnicalAnalyzer:
             "confidence": confidence,
             "sell_score": sell_score,
             "buy_score": buy_score,
+            "tech_score": tech_score,
             "reasons": reasons,
             "price": current_price,
             "rsi": rsi,
@@ -336,7 +369,12 @@ class TechnicalAnalyzer:
             "ema_21": ema_21,
             "ema_200": ema_200,
             "above_ema200": above_ema200,
+            "ema_trend": ema_trend,
             "macd_hist": macd_hist,
+            "macd_signal": macd_signal_label,
+            "ichimoku_signal": ichimoku_signal,
+            "adx": adx_val,
+            "bb_position": bb_position,
             "atr": atr,
             "bb_lower": bb_lower,
             "bb_upper": bb_upper,

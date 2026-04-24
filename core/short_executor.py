@@ -42,6 +42,19 @@ class ShortExecutor:
                 logger.debug(f"  {symbol} SHORT: Canli hesapta short devre disi")
                 return False
 
+            # === BULL MODE SHORT ENGELİ ===
+            # BULL_TREND rejiminde short açmak trend-karşı kayıp yaratır
+            market_regime = getattr(bot, '_market_regime', 'UNKNOWN')
+            enhanced_regime = getattr(bot, '_enhanced_regime', {})
+            enhanced_regime_name = enhanced_regime.get('regime', '') if isinstance(enhanced_regime, dict) else ''
+            
+            if market_regime == 'BULL' or 'BULL' in enhanced_regime_name:
+                logger.info(
+                    f"  {symbol} SHORT ENGEL: Piyasa rejimi {market_regime} "
+                    f"({enhanced_regime_name}) — BULL modda short yapilmaz"
+                )
+                return False
+
             # Kara liste kontrolu
             if symbol in short_config.get("short_blacklist", []):
                 logger.info(f"  {symbol} SHORT KARA LISTE: Squeeze riski yuksek")
@@ -254,7 +267,12 @@ class ShortExecutor:
             # Ajan öz-değerlendirme feedback loop (SHORT)
             if hasattr(bot, 'agent_perf'):
                 # Short'ta kar = fiyat düştü = SELL tahmini doğru
-                pnl_usd = (entry - float(analysis.get("price", entry))) * qty if entry > 0 else 0
+                # Not: Gerçek kapanış fiyatını bilmiyoruz, tahmini PnL
+                try:
+                    current_price = float(bot.client.get_latest_trade(symbol).price) if entry > 0 else entry
+                    pnl_usd = (entry - current_price) * qty if entry > 0 else 0
+                except Exception:
+                    pnl_usd = 0
                 outcome = "WIN" if pnl_usd > 0 else "LOSS" if pnl_usd < 0 else "NEUTRAL"
                 try:
                     bot.agent_perf.record_outcome(symbol, outcome, pnl_usd)
@@ -270,17 +288,29 @@ class ShortExecutor:
             return False
 
     def _is_squeeze_risk(self, symbol: str, analysis: Dict) -> bool:
-        """Short squeeze risk tespiti."""
+        """Short squeeze risk tespiti — düşük eşikler (v4.3 iyileştirme).
+        
+        Önceki eşikler çok yüksekti (volume 3x + momentum %5).
+        Daha düşük eşikler erken squeeze tespiti sağlar.
+        """
         volume_ratio = analysis.get("volume_ratio", 1.0)
         momentum = analysis.get("momentum_5bar", 0)
 
-        # Volume 3x VE fiyat %5+ yukseliyorsa
-        if volume_ratio > 3.0 and momentum > 5.0:
+        # Volume 2x VE fiyat %3+ yukseliyorsa (v4.3: önceki 3x/%5 çok geçti)
+        if volume_ratio > 2.0 and momentum > 3.0:
+            return True
+
+        # Volume 2.5x tek basina (guclu hacim artisi)
+        if volume_ratio > 2.5 and momentum > 1.0:
+            return True
+
+        # RSI 75+ (overbought bölgesine giriş) VE hacim artışı
+        rsi = analysis.get("rsi", 50)
+        if rsi > 75 and volume_ratio > 1.5:
             return True
 
         # RSI 80+ (asiri alinan, squeeze yangini olabilir)
-        rsi = analysis.get("rsi", 50)
-        if rsi > 80 and volume_ratio > 2.0:
+        if rsi > 80 and volume_ratio > 1.2:
             return True
 
         return False

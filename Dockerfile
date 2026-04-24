@@ -29,6 +29,12 @@ for f in files: \
     except Exception as e: \
         print(f'  ✗ {f}: {e}'); \
 print('FinBERT ONNX download complete.'); \
+# Kritik dosyalari dogrula \
+model_ok = os.path.exists(os.path.join(cache_dir, 'model.onnx')); \
+tok_ok = os.path.exists(os.path.join(cache_dir, 'tokenizer.json')); \
+print(f'Dogrulama: model.onnx={model_ok}, tokenizer.json={tok_ok}'); \
+if not model_ok or not tok_ok: \
+    print('UYARI: Kritik dosyalar eksik! FinBERT VADER fallback ile calisacak.'); \
 " || echo "Model pre-download failed, will download at runtime"
 
 # HuggingFace cache temizle (Docker image küçültsün)
