@@ -279,13 +279,13 @@ STOCK_CONFIG = {
     "default_tier_weight": 0.20,
 
     # === RISK YÖNETİMİ ===
-    "max_risk_per_trade_pct": 0.02,
-    "max_position_pct": 0.30,
-    "max_position_usd": 200,               # Küçük hesap: max $200/trade
-    "live_max_position_usd": 200,
-    "max_open_positions": 3,
-    "cash_reserve_pct": 0.15,               # %15 nakit rezerv
-    "equity_floor_pct": 0.85,               # Hesap %85'ine düşerse dur
+    "max_risk_per_trade_pct": 0.03,
+    "max_position_pct": 0.70,              # %70 equity per pozisyon (agresif)
+    "max_position_usd": 200,               # Paper default (PAPER_AGGRESSIVE override eder)
+    "live_max_position_usd": 450,          # LIVE: max $450/trade (önceki: $200)
+    "max_open_positions": 2,               # 2 büyük pozisyon (önceki: 3 küçük)
+    "cash_reserve_pct": 0.05,              # %5 nakit rezerv (önceki: %15)
+    "equity_floor_pct": 0.65,              # Hesap %65'ine düşerse dur (önceki: %85)
 
     # === STOP/PROFIT HEDEFLERİ (backtest sonrası optimize) ===
     "stop_loss_pct": 0.04,                  # %4 stop-loss (3% çok dar)
@@ -296,7 +296,7 @@ STOCK_CONFIG = {
     "partial_profit_pct": 0.05,             # %5'de yarısını sat
 
     # === SINYAL EŞİKLERİ ===
-    "min_confidence_score": 35,             # Min sinyal güven puanı (%35 — v4.2 düşürüldü)
+    "min_confidence_score": 30,             # Min sinyal güven puanı (%30 — LIVE agresif)
     "rsi_oversold": 30,
     "rsi_overbought": 70,
     "min_volume_ratio": 1.3,

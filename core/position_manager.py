@@ -22,6 +22,7 @@ class PositionManager:
 
     def __init__(self, bot):
         self.bot = bot
+        self._small_pos_log_time = {}  # Log spam önleyici: sembol → son log zamanı
 
     def manage_positions(self, config: Dict):
         """Gelişmiş pozisyon yönetimi: trailing stop + kademeli kâr alma."""
@@ -44,7 +45,12 @@ class PositionManager:
             # Minimum pozisyon değeri kontrolü ($5)
             pos_value = float(pos.qty) * float(pos.current_price)
             if pos_value < config.get("min_position_close_usd", 5.0):
-                logger.debug(f"  Pozisyon cok kucuk, atla: {symbol} ${pos_value:.2f}")
+                # Log spam önle: aynı sembol için 5 dk'da 1 kez logla
+                now = datetime.now()
+                last_log = self._small_pos_log_time.get(symbol)
+                if not last_log or (now - last_log).total_seconds() > 300:
+                    logger.debug(f"  Pozisyon cok kucuk, atla: {symbol} ${pos_value:.2f}")
+                    self._small_pos_log_time[symbol] = now
                 continue
 
             entry_price = float(pos.avg_entry_price)
@@ -134,15 +140,23 @@ class PositionManager:
                 )
                 try:
                     qty = float(pos.qty)
-                    half_qty = max(int(qty * 0.5), 1) if qty >= 2 else qty  # Hisse: tam sayı
-                    if half_qty > 0:
+                    # For crypto allow fractional, for stocks int is fine. We can just use round(qty * 0.5, 4)
+                    half_qty = round(qty * 0.5, 4)
+                    # Minimum satış tutarı kontrolü — cascade selling önleyici
+                    half_value = half_qty * current_price
+                    if half_value < 10.0:
+                        logger.debug(f"  {symbol} kademeli satış çok küçük: ${half_value:.2f} < $10, atla")
+                    elif qty >= 2 or half_qty > 0:
                         request = MarketOrderRequest(
                             symbol=symbol, qty=half_qty,
                             side=OrderSide.SELL, time_in_force=TimeInForce.DAY,
                         )
                         bot.client.submit_order(request)
                         bot.positions[symbol]["partial_sold"] = True
-                        logger.info(f"  ✅ Yarısı satıldı: {half_qty} {symbol}")
+                        from datetime import timedelta
+                        bot.sell_cooldown[symbol] = datetime.now() + timedelta(seconds=config.get("sell_cooldown_seconds", 300))
+                        bot._save_position_metadata()
+                        logger.info(f"  ✅ Yarısı satıldı: {half_qty} {symbol} (${half_value:.2f}) (Cooldown eklendi)")
                 except Exception as e:
                     logger.error(f"Kademeli satış hatası {symbol}: {e}")
 
@@ -265,7 +279,10 @@ class PositionManager:
                         )
                         bot.client.submit_order(request)
                         bot.short_positions[symbol]["partial_covered"] = True
-                        logger.info(f"  ✅ Short yarisini cover: {half_qty} {symbol}")
+                        from datetime import timedelta
+                        bot.sell_cooldown[f"short_{symbol}"] = datetime.now() + timedelta(seconds=config.get("sell_cooldown_seconds", 300))
+                        bot._save_position_metadata()
+                        logger.info(f"  ✅ Short yarisini cover: {half_qty} {symbol} (Cooldown eklendi)")
                 except Exception as e:
                     logger.error(f"Short partial cover hatasi {symbol}: {e}")
 

@@ -17,20 +17,20 @@ from utils.logger import logger
 class PositionSizer:
     """Kelly-ATR adaptif pozisyon boyutlandırma motoru."""
 
-    # Kelly fraction — tam Kelly çok agresif, %25'ini kullanıyoruz
-    KELLY_FRACTION = 0.25
+    # Kelly fraction — tam Kelly çok agresif, %35'ini kullanıyoruz
+    KELLY_FRACTION = 0.35     # Önceki: 0.25 (çok muhafazakârdı)
 
     # ATR bazlı volatilite ölçekleme
     ATR_BASE_PCT = 2.0       # %2 ATR = normal volatilite
-    ATR_SCALE_FACTOR = 0.15  # ATR her %1 artışta pozisyon %15 küçülür
+    ATR_SCALE_FACTOR = 0.12  # ATR her %1 artışta pozisyon %12 küçülür (önceki: %15)
 
     # Kayıp serisi dampingi
     LOSS_DAMPING_FACTOR = 0.15  # Her ardışık kayıpta %15 küçültme
     MAX_LOSS_DAMPING = 0.60     # En fazla %60 küçültme (min %40 pozisyon)
 
     # Pozisyon limitleri
-    MIN_POSITION_PCT = 0.03   # Equity'nin min %3'ü
-    MAX_POSITION_PCT = 0.15   # Equity'nin max %15'i
+    MIN_POSITION_PCT = 0.05   # Equity'nin min %5'i (önceki: %3)
+    MAX_POSITION_PCT = 0.50   # Equity'nin max %50'si (önceki: %15)
 
     def __init__(self, performance_tracker=None):
         """
@@ -150,14 +150,14 @@ class PositionSizer:
     def _calculate_kelly(self) -> float:
         """Fractional Kelly hesapla — performans verilerinden."""
         if self.performance is None:
-            return 0.10  # Veri yoksa konsarvatif %10
+            return 0.20  # Veri yoksa %20 başla (önceki: %10)
 
         stats = self.performance.get_stats(days=30)  # Son 30 gün
         total_trades = stats.get("total_trades", 0)
 
         if total_trades < 5:
             # Yeterli veri yok — konsarvatif başla
-            return 0.08
+            return 0.15  # Yeterli veri yok — %15 başla (önceki: %8)
 
         win_rate = stats.get("win_rate", 50) / 100  # 0-1 arası
         avg_win = stats.get("avg_win", 0)

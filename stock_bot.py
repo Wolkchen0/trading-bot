@@ -487,6 +487,10 @@ class StockBot:
                     or len(self.options_positions) > 0
                 )
                 interval = 15 if has_positions else config.get("scan_interval_seconds", 30)
+                
+                # Her döngü sonunda metadata kaydet ki bot çökerse state (partial_sold vs) kaybolmasın
+                self._save_position_metadata()
+                
                 time.sleep(interval)
 
             except KeyboardInterrupt:
